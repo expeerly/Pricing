@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Expeerly Pricing Calculator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.9/babel.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .slider-thumb::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #6B4EFF; cursor: pointer; }
+    .slider-thumb::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: #6B4EFF; cursor: pointer; border: none; }
+    .internal-badge { background: linear-gradient(135deg, #FFF3CD, #FFE082); }
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const PLATFORM_FEE   = 15000;
+    const BASE_REVIEWS   = 15;
+    const BASE_REVIEWS_PER_QUARTER = 6;
+    const ONBOARDING_FEE = 1750;
+    const MARKET_FEE     = 5000;
+    const QUARTERLY_MULT = 1.20;
+
+    const B2B_LEVELS        = { low: 1000, medium: 2500, high: 5000 };
+    const DIFFICULTY_LEVELS = { easy: 0, medium: 250, difficult: 500 };
+
+    // Customer-facing review prices (above base 15)
+    const REVIEW_PRICE = { standardGifted: 500, mdaGifted: 800, standardLoan: 500, mdaLoan: 800 };
+    // Loan logistics surcharge per product (on top of review price)
+    const LOAN_SURCHARGE = { standardLoan: 500, mdaLoan: 850 };
+    // Internal cost per review (for margin analysis)
+    const REVIEW_COST = { standardGifted: 100, mdaGifted: 100, standardLoan: 250, mdaLoan: 500 };
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    const fmt = n => 'CHF ' + Math.round(n).toLocaleString('de-CH');
+    const sum = obj => Object.values(obj).reduce((a, b) => a + b, 0);
+    const mixTotal = m => (m.standardGifted||0) + (m.mdaGifted||0) + (m.standardLoan||0) + (m.mdaLoan||0);
+
+    function applyFormatMultiplier(mix, multiplier) {
+      return {
+        standardGifted: (mix.standardGifted||0) * multiplier,
+        mdaGifted:      (mix.mdaGifted||0)      * multiplier,
+        standardLoan:   (mix.standardLoan||0)   * multiplier,
+        mdaLoan:        (mix.mdaLoan||0)         * multiplier,
+      };
+    }
+
+    // Scale a mix proportionally to targetTotal, fixing rounding drift on largest key
+    function scaleMix(mix, targetTotal) {
+      const total = mixTotal(mix);
+      if (total === 0 || targetTotal === 0) return { standardGifted:0, mdaGifted:0, standardLoan:0, mdaLoan:0 };
+      const r = targetTotal / total;
+      const s = {
+        standardGifted: Math.round((mix.standardGifted||0) * r),
+        mdaGifted:      Math.round((mix.mdaGifted||0)      * r),
+        standardLoan:   Math.round((mix.standardLoan||0)   * r),
+        mdaLoan:        Math.round((mix.mdaLoan||0)        * r),
+      };
+      const diff = targetTotal - mixTotal(s);
+      if (diff !== 0) {
+        const keys = ['standardGifted','mdaGifted','standardLoan','mdaLoan'];
+        const largest = keys.filter(k => (mix[k]||0) > 0).reduce((a,b) => (mix[a]||0) >= (mix[b]||0) ? a : b, keys[0]);
+        s[largest] = Math.max(0, s[largest] + diff);
+      }
+      return s;
+    }
+
+    function getLoadbeeFee(base, chOnly) {
+      if (chOnly) return 500;
+      return base <= 17500 ? 1500 : 2500;
+    }
+
+    // ── Core price calculation ─────────────────────────────────────────────────
+    // effectiveMix: already has format multiplier applied; targetTotal: review count for this package tier
+    function calcPackage(inputs, effectiveMix, targetTotal, isScalePackage = false, scaleOverridePrice = null) {
+      const scaledMix = scaleMix(effectiveMix, targetTotal);
+
+      // Existing catalog (same across all packages)
+      const existingStdFee = inputs.existingStandard * 150;
+      const existingMDAFee = inputs.existingMDA * 250;
+      const existingFee    = existingStdFee + existingMDAFee;
+
+      // New reviews above base 6
+      const aboveBase = Math.max(0, targetTotal - BASE_REVIEWS);
+      const aboveMix  = aboveBase > 0 ? scaleMix(effectiveMix, aboveBase) : { standardGifted:0, mdaGifted:0, standardLoan:0, mdaLoan:0 };
+      const newRevFee =
+        aboveMix.standardGifted * REVIEW_PRICE.standardGifted +
+        aboveMix.mdaGifted      * REVIEW_PRICE.mdaGifted      +
+        aboveMix.standardLoan   * REVIEW_PRICE.standardLoan   +
+        aboveMix.mdaLoan        * REVIEW_PRICE.mdaLoan;
+
+      // Loan logistics surcharge on ALL loan reviews in this package
+      const loanSurcharge =
+        scaledMix.standardLoan * LOAN_SURCHARGE.standardLoan +
+        scaledMix.mdaLoan      * LOAN_SURCHARGE.mdaLoan;
+
+      // B2B surcharge per review
+      const b2bFee = inputs.b2bRequired ? B2B_LEVELS[inputs.b2bLevel] * targetTotal : 0;
+
+      // Internal difficulty per review
+      const diffFee = DIFFICULTY_LEVELS[inputs.difficulty] * targetTotal;
+
+      // Market fees
+      const marketFee = inputs.additionalMarkets * MARKET_FEE;
+
+      // Onboarding (one-time)
+      const onboardingFee = inputs.newCustomer ? ONBOARDING_FEE : 0;
+
+      // Sub-total before Loadbee
+      const subTotal = PLATFORM_FEE + existingFee + newRevFee + loanSurcharge + b2bFee + marketFee;
+
+      // Loadbee depends on sub-total
+      const loadbeeFee = inputs.loadbee ? getLoadbeeFee(subTotal, inputs.additionalMarkets === 0) : 0;
+
+      // Annual base (customer-facing, no difficulty)
+      const annualBase = isScalePackage && scaleOverridePrice != null
+        ? scaleOverridePrice
+        : subTotal + loadbeeFee;
+
+      return {
+        targetTotal,
+        scaledMix,
+        aboveMix,
+        existingStdFee,
+        existingMDAFee,
+        existingFee,
+        newRevFee,
+        loanSurcharge,
+        b2bFee,
+        diffFee,
+        marketFee,
+        loadbeeFee,
+        onboardingFee,
+        annualBase,
+        subTotal: isScalePackage ? annualBase : subTotal + loadbeeFee,
+        isScalePackage,
+      };
+    }
+
+    // Given annualBase and payment/contract inputs, compute final prices
+    function applyTerms(annualBase, onboardingFee, paymentTerms, contractLength) {
+      const qMult = paymentTerms === 'quarterly' ? QUARTERLY_MULT : 1;
+      const annualCustomer = annualBase * qMult;
+      const quarterlyAmt   = paymentTerms === 'quarterly' ? annualCustomer / 4 : null;
+      const totalContract  = annualCustomer * contractLength + onboardingFee;
+      return { annualCustomer, quarterlyAmt, totalContract, qMult };
+    }
+
+    // Savings from price freeze: new reviews this year become catalog next year
+    function calcSavings(scaledMix, annualCustomer, contractLength, paymentTerms) {
+      if (contractLength <= 1) return null;
+      // Standard catalog rate for reviews that become catalog
+      const newStd = (scaledMix.standardGifted||0) + (scaledMix.standardLoan||0);
+      const newMDA = (scaledMix.mdaGifted||0) + (scaledMix.mdaLoan||0);
+      const yearlyIncrease = newStd * 150 + newMDA * 250;  // what catalog fees would rise by each year
+      if (yearlyIncrease === 0) return null;
+      const qMult = paymentTerms === 'quarterly' ? QUARTERLY_MULT : 1;
+      // Year 2: +yearlyIncrease, Year 3: +yearlyIncrease * 2 (reviews from yr1 + yr2 accumulated)
+      let totalSavings = 0;
+      for (let yr = 2; yr <= contractLength; yr++) {
+        totalSavings += yearlyIncrease * (yr - 1) * qMult;
+      }
+      return totalSavings;
+    }
+
+    // Internal cost for margin calc
+    function calcCost(scaledMix) {
+      return (
+        (scaledMix.standardGifted||0) * REVIEW_COST.standardGifted +
+        (scaledMix.mdaGifted||0)      * REVIEW_COST.mdaGifted      +
+        (scaledMix.standardLoan||0)   * REVIEW_COST.standardLoan   +
+        (scaledMix.mdaLoan||0)        * REVIEW_COST.mdaLoan
+      );
+    }
+
+    // ── UI Components ─────────────────────────────────────────────────────────
+    function Toggle({ value, onChange, options, small }) {
+      return (
+        <div className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
+          {options.map(opt => (
+            <button key={opt.value} onClick={() => onChange(opt.value)}
+              className={`${small ? 'px-2.5 py-1 text-xs' : 'px-3 py-1.5 text-sm'} font-medium transition-colors ${value === opt.value ? 'bg-[#6B4EFF] text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    function InputSection({ label, children, internal }) {
+      return (
+        <div className={`rounded-xl p-4 mb-3 ${internal ? 'internal-badge border border-yellow-300' : 'bg-white border border-gray-100 shadow-sm'}`}>
+          {internal && <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-2">🔒 Internal Only — Never Show to Customer</div>}
+          {label && <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">{label}</div>}
+          {children}
+        </div>
+      );
+    }
+
+    function NumInput({ value, onChange, className }) {
+      return (
+        <input type="number" min="0" value={value}
+          onChange={e => onChange(Math.max(0, parseInt(e.target.value) || 0))}
+          className={`border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#6B4EFF] ${className||''}`}
+        />
+      );
+    }
+
+    function MarginBadge({ marginPct }) {
+      const color = marginPct > 60 ? 'bg-green-100 text-green-800' : marginPct >= 40 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
+      const dot   = marginPct > 60 ? 'bg-green-500' : marginPct >= 40 ? 'bg-yellow-500' : 'bg-red-500';
+      return (
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${color}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+          {marginPct.toFixed(1)}%
+        </span>
+      );
+    }
+
+    // ── Package Card ───────────────────────────────────────────────────────────
+    function PackageCard({ name, tagline, badge, color, inputs, pkgData, contractLength, setContractLength, onCopy }) {
+      const { annualCustomer, quarterlyAmt, totalContract } = applyTerms(
+        pkgData.annualBase, pkgData.onboardingFee, inputs.paymentTerms, contractLength
+      );
+      const savings = calcSavings(pkgData.scaledMix, annualCustomer, contractLength, inputs.paymentTerms);
+      const isQuarterly = inputs.paymentTerms === 'quarterly';
+      const isMultiYear = contractLength > 1;
+      const bothFormats = inputs.reviewFormat === 'both';
+      const fmt2 = inputs.reviewFormat === 'both' ? 'Vertical + Horizontal (both formats)' : 'Single format (vertical or horizontal)';
+
+      // Build "What's included" — fully specific to this customer's inputs
+      const includedItems = [];
+
+      // 1. New reviews — specific count and cadence
+      if (pkgData.isScalePackage) {
+        includedItems.push({ text: 'Unlimited new reviews in selected geography', sub: null });
+      } else {
+        const perQ = Math.ceil(pkgData.targetTotal / 4);
+        includedItems.push({
+          text: `${pkgData.targetTotal} new reviews/year (${perQ}/quarter)`,
+          sub: null,
+        });
+      }
+
+      // 2. Format
+      includedItems.push({ text: `Format: ${fmt2}${bothFormats ? ' — count doubled for pricing' : ''}`, sub: null });
+
+      // 3. Product type breakdown
+      const typeLines = [];
+      if ((pkgData.scaledMix.standardGifted||0) > 0) typeLines.push(`${pkgData.scaledMix.standardGifted} standard gifted`);
+      if ((pkgData.scaledMix.mdaGifted||0) > 0)      typeLines.push(`${pkgData.scaledMix.mdaGifted} MDA gifted`);
+      if ((pkgData.scaledMix.standardLoan||0) > 0)    typeLines.push(`${pkgData.scaledMix.standardLoan} standard loan product${pkgData.scaledMix.standardLoan > 1 ? 's' : ''}`);
+      if ((pkgData.scaledMix.mdaLoan||0) > 0)         typeLines.push(`${pkgData.scaledMix.mdaLoan} MDA loan product${pkgData.scaledMix.mdaLoan > 1 ? 's' : ''}`);
+      if (typeLines.length > 0) {
+        includedItems.push({ text: typeLines.join(' · '), sub: null, indent: true });
+      }
+
+      // 4. Existing catalog
+      if (inputs.existingStandard > 0 || inputs.existingMDA > 0) {
+        const total = inputs.existingStandard + inputs.existingMDA;
+        const parts = [];
+        if (inputs.existingStandard > 0) parts.push(`${inputs.existingStandard} standard (CHF 150 each)`);
+        if (inputs.existingMDA > 0)      parts.push(`${inputs.existingMDA} MDA (CHF 250 each)`);
+        includedItems.push({ text: `${total} existing catalog review${total>1?'s':''} kept live`, sub: parts.join(' · ') });
+      }
+
+      // 5. AI translations — always
+      includedItems.push({ text: 'AI translations + subtitles in all languages included', sub: null });
+
+      // 6. Usage rights
+      includedItems.push({ text: `Full usage rights across all channels${isMultiYear ? ` — ${contractLength}-year contract` : ''}`, sub: null });
+
+      // 7. Markets
+      const totalMarkets = 1 + inputs.additionalMarkets;
+      includedItems.push({
+        text: inputs.additionalMarkets > 0
+          ? `Switzerland + ${inputs.additionalMarkets} additional market${inputs.additionalMarkets > 1 ? 's' : ''} (${totalMarkets} total)`
+          : 'Switzerland (1 market)',
+        sub: null,
+      });
+
+      // 8. Loadbee
+      if (inputs.loadbee) {
+        includedItems.push({ text: 'Loadbee & Flixmedia distribution included', sub: null });
+      }
+
+      // 9. B2B
+      if (inputs.b2bRequired) {
+        includedItems.push({ text: `B2B/Specialist community — ${inputs.b2bLevel} level`, sub: null });
+      }
+
+      // 10. Payment
+      if (isQuarterly) {
+        includedItems.push({ text: `Quarterly payments (4 × ${fmt(quarterlyAmt)})`, sub: null });
+      } else {
+        includedItems.push({ text: 'Annual upfront payment', sub: null });
+      }
+
+      const copyText = () => {
+        const lines = [
+          `=== ${name} Package — ${inputs.customerName || 'Customer'} ===`,
+          '',
+          `Annual Price (excl. VAT): ${fmt(annualCustomer)}`,
+          isQuarterly ? `Quarterly: ${fmt(quarterlyAmt)}` : '',
+          isMultiYear ? `Total Contract (${contractLength}y): ${fmt(totalContract)}` : '',
+          inputs.newCustomer ? `One-time Onboarding: ${fmt(ONBOARDING_FEE)}` : '',
+          savings ? `Price Freeze Savings vs renewing: ${fmt(savings)} over ${contractLength} years` : '',
+          '',
+          "What's Included:",
+          ...includedItems.map(it => `• ${it.text}${it.sub ? '\n  ' + it.sub : ''}`),
+        ].filter(Boolean).join('\n');
+        onCopy(lines);
+      };
+
+      return (
+        <div className={`rounded-2xl border-2 ${color.border} bg-white shadow-sm flex flex-col relative`}>
+          {badge && (
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#6B4EFF] text-white text-xs font-bold px-3 py-1 rounded-full shadow whitespace-nowrap">
+              {badge}
+            </div>
+          )}
+
+          <div className={`${color.header} rounded-t-2xl px-5 py-4`}>
+            <div className="text-xs font-bold uppercase tracking-widest text-white/70 mb-1">{tagline}</div>
+            <div className="text-xl font-bold text-white">{name}</div>
+          </div>
+
+          <div className="px-5 py-4 flex-1 flex flex-col gap-4">
+
+            {/* Contract length toggle — per card */}
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-500 font-medium">Contract:</span>
+              <Toggle value={contractLength} onChange={setContractLength} small options={[
+                { value: 1, label: '1y' },
+                { value: 2, label: '2y' },
+                { value: 3, label: '3y' },
+              ]} />
+              {isMultiYear && (
+                <span className="text-xs font-bold text-[#6B4EFF] bg-purple-50 px-2 py-0.5 rounded-full">Price Frozen</span>
+              )}
+            </div>
+
+            {/* Price block */}
+            <div>
+              <div className="text-3xl font-bold text-gray-900 tabular-nums">{fmt(annualCustomer)}</div>
+              <div className="text-sm text-gray-500">per year, excl. VAT</div>
+              {isQuarterly && (
+                <div className="text-sm font-semibold text-[#6B4EFF] mt-0.5">{fmt(quarterlyAmt)}/quarter (+20%)</div>
+              )}
+              {isMultiYear && (
+                <div className="text-sm font-semibold text-gray-700 mt-0.5">
+                  {contractLength}y total: {fmt(totalContract)}
+                  {inputs.newCustomer && <span className="text-xs text-gray-400"> incl. onboarding</span>}
+                </div>
+              )}
+              {inputs.newCustomer && !isMultiYear && (
+                <div className="text-sm text-gray-500 mt-0.5">+ {fmt(ONBOARDING_FEE)} one-time onboarding</div>
+              )}
+              {savings != null && savings > 0 && (
+                <div className="mt-1.5 bg-green-50 border border-green-200 rounded-lg px-3 py-1.5 text-xs text-green-800 font-medium">
+                  You save {fmt(savings)} over {contractLength} years by locking in today
+                </div>
+              )}
+            </div>
+
+            {/* Price Breakdown */}
+            <div className="text-sm space-y-1">
+              <div className="font-semibold text-gray-700 mb-1.5">Price Breakdown:</div>
+              <Row label="Platform fee (incl. 15 base reviews)" val={fmt(PLATFORM_FEE)} />
+              {pkgData.existingStdFee > 0 && <Row label={`${inputs.existingStandard} existing standard @ CHF 150`} val={fmt(pkgData.existingStdFee)} indent />}
+              {pkgData.existingMDAFee > 0 && <Row label={`${inputs.existingMDA} existing MDA @ CHF 250`} val={fmt(pkgData.existingMDAFee)} indent />}
+              {pkgData.isScalePackage ? (
+                <Row label="Scale pricing (Growth × 1.75, rounded to CHF 500)" val={fmt(pkgData.annualBase)} />
+              ) : (
+                <>
+                  {(pkgData.aboveMix.standardGifted||0) > 0 && <Row label={`+${pkgData.aboveMix.standardGifted} std gifted @ CHF 500`} val={fmt(pkgData.aboveMix.standardGifted * 500)} indent />}
+                  {(pkgData.aboveMix.mdaGifted||0) > 0      && <Row label={`+${pkgData.aboveMix.mdaGifted} MDA gifted @ CHF 800`} val={fmt(pkgData.aboveMix.mdaGifted * 800)} indent />}
+                  {(pkgData.aboveMix.standardLoan||0) > 0   && <Row label={`+${pkgData.aboveMix.standardLoan} std loan review @ CHF 500`} val={fmt(pkgData.aboveMix.standardLoan * 500)} indent />}
+                  {(pkgData.aboveMix.mdaLoan||0) > 0        && <Row label={`+${pkgData.aboveMix.mdaLoan} MDA loan review @ CHF 800`} val={fmt(pkgData.aboveMix.mdaLoan * 800)} indent />}
+                  {(pkgData.scaledMix.standardLoan||0) > 0  && <Row label={`${pkgData.scaledMix.standardLoan} std loan surcharge @ CHF 500`} val={fmt(pkgData.scaledMix.standardLoan * 500)} indent />}
+                  {(pkgData.scaledMix.mdaLoan||0) > 0       && <Row label={`${pkgData.scaledMix.mdaLoan} MDA loan surcharge @ CHF 850`} val={fmt(pkgData.scaledMix.mdaLoan * 850)} indent />}
+                </>
+              )}
+              {pkgData.b2bFee > 0     && <Row label={`B2B/Specialist (${inputs.b2bLevel}) × ${pkgData.targetTotal} reviews`} val={fmt(pkgData.b2bFee)} indent />}
+              {pkgData.marketFee > 0  && <Row label={`${inputs.additionalMarkets} additional market${inputs.additionalMarkets>1?'s':''}`} val={fmt(pkgData.marketFee)} indent />}
+              {pkgData.loadbeeFee > 0 && <Row label="Loadbee/Flixmedia distribution" val={fmt(pkgData.loadbeeFee)} indent />}
+              {isQuarterly            && <Row label="Quarterly surcharge (+20%)" val={`+${fmt(pkgData.annualBase * 0.20)}`} accent />}
+              <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
+                <span>Annual total</span>
+                <span className="tabular-nums">{fmt(annualCustomer)}</span>
+              </div>
+            </div>
+
+            {/* What's included */}
+            <div className="border-t border-gray-100 pt-3 flex-1">
+              <div className="font-semibold text-gray-700 mb-2 text-sm">What's included:</div>
+              <ul className="space-y-1.5 text-xs">
+                {includedItems.map((item, i) => (
+                  <li key={i} className={item.indent ? 'pl-4 text-gray-400' : 'flex gap-1.5 text-gray-600'}>
+                    {!item.indent && <span className="text-green-500 shrink-0 mt-px">✓</span>}
+                    <span>
+                      {item.text}
+                      {item.sub && <span className="block text-gray-400 mt-0.5">{item.sub}</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <button onClick={copyText}
+              className="w-full py-2.5 rounded-lg border-2 border-[#6B4EFF] text-[#6B4EFF] font-semibold text-sm hover:bg-[#6B4EFF] hover:text-white transition-colors">
+              Copy Package Summary
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function Row({ label, val, indent, accent }) {
+      return (
+        <div className={`flex justify-between ${indent ? 'pl-3 text-gray-500' : 'text-gray-600'} ${accent ? 'text-[#6B4EFF]' : ''}`}>
+          <span>{label}</span>
+          <span className="font-medium tabular-nums ml-2 shrink-0">{val}</span>
+        </div>
+      );
+    }
+
+    // ── Internal Margin Section ────────────────────────────────────────────────
+    function MarginSection({ inputs, packages, contractLengths }) {
+      const pkgList = [
+        { name: 'Starter', pkg: packages.starter, cl: contractLengths.starter },
+        { name: 'Growth',  pkg: packages.growth,  cl: contractLengths.growth  },
+        { name: 'Scale',   pkg: packages.scale,   cl: contractLengths.scale   },
+      ];
+
+      return (
+        <div className="internal-badge rounded-xl border border-yellow-300 p-5 mb-4">
+          <div className="text-sm font-bold text-amber-800 uppercase tracking-wide mb-1">🔒 Internal Analysis — Do Not Share with Customer</div>
+          <p className="text-xs text-amber-700 mb-4">Margin assumes cost: Std gifted CHF 100 · MDA gifted CHF 100 · Std loan CHF 250 · MDA loan CHF 500 per review</p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            {pkgList.map(({ name, pkg, cl }) => {
+              const { annualCustomer } = applyTerms(pkg.annualBase, pkg.onboardingFee, inputs.paymentTerms, cl);
+              const cost = pkg.isScalePackage ? null : calcCost(pkg.scaledMix);
+              const margin     = cost != null ? annualCustomer - cost : null;
+              const marginPct  = cost != null ? (margin / annualCustomer) * 100 : null;
+              const savings    = calcSavings(pkg.scaledMix, annualCustomer, cl, inputs.paymentTerms);
+              const diffImpact = DIFFICULTY_LEVELS[inputs.difficulty] * pkg.targetTotal * (inputs.paymentTerms === 'quarterly' ? QUARTERLY_MULT : 1) * cl;
+
+              return (
+                <div key={name} className="bg-white/60 rounded-lg p-3 space-y-1 text-xs">
+                  <div className="font-bold text-gray-800 mb-2 flex items-center justify-between">
+                    <span>{name} — {pkg.isScalePackage ? 'Unlimited' : pkg.targetTotal + ' reviews'}</span>
+                    {marginPct != null && <MarginBadge marginPct={marginPct} />}
+                  </div>
+                  <InternalRow label="Revenue (annual)" val={fmt(annualCustomer)} />
+                  {cost != null ? (
+                    <>
+                      <InternalRow label="Est. cost" val={fmt(cost)} />
+                      <InternalRow label="Gross margin" val={`${fmt(margin)} (${marginPct.toFixed(1)}%)`} bold color={marginPct > 60 ? 'text-green-700' : marginPct >= 40 ? 'text-yellow-700' : 'text-red-700'} />
+                    </>
+                  ) : (
+                    <div className="text-gray-400 italic">Cost N/A — unlimited package</div>
+                  )}
+                  {inputs.difficulty !== 'easy' && (
+                    <InternalRow label={`Difficulty margin (${cl}y)`} val={fmt(diffImpact)} accent="text-amber-700" />
+                  )}
+                  {cl > 1 && (
+                    <InternalRow label={`Total contract (${cl}y)`} val={fmt(annualCustomer * cl + pkg.onboardingFee)} bold />
+                  )}
+                  {savings != null && savings > 0 && (
+                    <InternalRow label={`Freeze savings (${cl}y)`} val={fmt(savings)} accent="text-green-700" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {inputs.contractLength > 1 && (
+            <div className="bg-white/60 rounded-lg p-3 text-xs text-gray-600">
+              <strong className="text-gray-800">Price Freeze Value:</strong> As catalog grows, renewal fees would increase. The freeze locks today's rate, creating compounding savings vs annual renewal.
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function InternalRow({ label, val, bold, color, accent }) {
+      return (
+        <div className={`flex justify-between ${bold ? 'font-semibold' : ''} ${color || accent || 'text-gray-600'}`}>
+          <span>{label}</span>
+          <span className="tabular-nums">{val}</span>
+        </div>
+      );
+    }
+
+    // ── App ────────────────────────────────────────────────────────────────────
+    function App() {
+      const [inputs, setInputs] = useState({
+        customerName: '',
+        newCustomer: false,
+        reviewFormat: 'single',
+        reviewMix: { standardGifted: 0, mdaGifted: 0, standardLoan: 0, mdaLoan: 0 },
+        existingStandard: 0,
+        existingMDA: 0,
+        b2bRequired: false,
+        b2bLevel: 'medium',
+        difficulty: 'easy',
+        additionalMarkets: 0,
+        loadbee: false,
+        paymentTerms: 'annual',
+      });
+      const [contractLengths, setContractLengths] = useState({ starter: 1, growth: 1, scale: 1 });
+      const [copied, setCopied] = useState(false);
+
+      const set    = (k, v) => setInputs(p => ({ ...p, [k]: v }));
+      const setMix = (k, v) => setInputs(p => ({ ...p, reviewMix: { ...p.reviewMix, [k]: v } }));
+      const setCL  = (pkg, v) => setContractLengths(p => ({ ...p, [pkg]: v }));
+
+      const formatMult  = inputs.reviewFormat === 'both' ? 2 : 1;
+      const rawTotal    = mixTotal(inputs.reviewMix);
+      const effectiveMix = useMemo(() => applyFormatMultiplier(inputs.reviewMix, formatMult), [inputs.reviewMix, formatMult]);
+      const effectiveTotal = mixTotal(effectiveMix);
+
+      // Package tier counts
+      const starterCount = Math.max(BASE_REVIEWS, effectiveTotal);               // exact stated need (effective)
+      const growthCount  = Math.max(BASE_REVIEWS, Math.ceil(effectiveTotal * 1.5));
+
+      const packages = useMemo(() => {
+        const starter = calcPackage(inputs, effectiveMix, starterCount);
+        const growth  = calcPackage(inputs, effectiveMix, growthCount);
+
+        // Scale: unlimited, price = Growth.annualBase × 1.75 rounded to nearest 500
+        const scalePrice = Math.round(growth.annualBase * 1.75 / 500) * 500;
+        const scale = calcPackage(inputs, effectiveMix, growthCount, true, scalePrice);
+
+        return { starter, growth, scale };
+      }, [inputs, effectiveMix, starterCount, growthCount]);
+
+      const handleCopy = text => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      };
+
+      const difficultyPct = { easy: 0, medium: 50, difficult: 100 }[inputs.difficulty];
+
+      const reviewTypeRows = [
+        { key: 'standardGifted', label: 'Standard gifted reviews',  hint: 'CHF 500/review' },
+        { key: 'mdaGifted',      label: 'MDA gifted reviews',       hint: 'CHF 800/review (incl. CHF 300 MDA surcharge)' },
+        { key: 'standardLoan',   label: 'Standard loan products',   hint: 'CHF 500/review + CHF 500 loan surcharge/product' },
+        { key: 'mdaLoan',        label: 'MDA loan products',        hint: 'CHF 800/review + CHF 850 loan surcharge/product' },
+      ];
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+
+          {/* Header */}
+          <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-[#6B4EFF] flex items-center justify-center">
+                <span className="text-white font-bold text-sm">E</span>
+              </div>
+              <span className="text-xl font-bold text-gray-900">expeerly</span>
+              <span className="text-sm text-gray-400 font-medium">Internal Pricing Calculator</span>
+            </div>
+            <div className="text-xs text-gray-400 font-medium bg-gray-100 px-3 py-1.5 rounded-full">
+              Internal Use Only — Sales Team
+            </div>
+          </header>
+
+          {/* Toast */}
+          {copied && (
+            <div className="fixed top-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-medium z-50">
+              ✓ Copied to clipboard
+            </div>
+          )}
+
+          <div className="flex flex-col lg:flex-row min-h-[calc(100vh-65px)]">
+
+            {/* ── Left: Inputs ── */}
+            <div className="lg:w-[420px] xl:w-[460px] shrink-0 bg-gray-50 border-r border-gray-200 p-5 overflow-y-auto">
+              <h2 className="text-lg font-bold text-gray-900 mb-4">Customer Parameters</h2>
+
+              {/* Customer */}
+              <InputSection label="Customer">
+                <input type="text" placeholder="Customer / Company name" value={inputs.customerName}
+                  onChange={e => set('customerName', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#6B4EFF] mb-3"
+                />
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={inputs.newCustomer} onChange={e => set('newCustomer', e.target.checked)}
+                    className="w-4 h-4 accent-[#6B4EFF]" />
+                  <span className="text-sm text-gray-700">New customer <span className="text-gray-400">(+CHF 1,750 onboarding)</span></span>
+                </label>
+              </InputSection>
+
+              {/* Review Format */}
+              <InputSection label="Review Format">
+                <Toggle value={inputs.reviewFormat} onChange={v => set('reviewFormat', v)} options={[
+                  { value: 'single', label: 'Single Format' },
+                  { value: 'both',   label: 'Both Formats' },
+                ]} />
+                <p className="text-xs text-gray-500 mt-2">
+                  {inputs.reviewFormat === 'both'
+                    ? '⚠ Both formats selected — review count doubled for pricing (vertical + horizontal per product)'
+                    : 'Single format: vertical OR horizontal per product'}
+                </p>
+              </InputSection>
+
+              {/* Review Mix */}
+              <InputSection label="New Reviews per Year — by Type">
+                <div className="space-y-3">
+                  {reviewTypeRows.map(row => (
+                    <div key={row.key} className="flex items-start gap-3">
+                      <NumInput value={inputs.reviewMix[row.key]} onChange={v => setMix(row.key, v)} className="w-20 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-700">{row.label}</div>
+                        <div className="text-xs text-gray-400">{row.hint}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {rawTotal > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Raw product total:</span>
+                      <span className="font-semibold text-gray-700">{rawTotal} products</span>
+                    </div>
+                    {formatMult > 1 && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Effective (×{formatMult} formats):</span>
+                        <span className="font-bold text-[#6B4EFF]">{effectiveTotal} reviews for pricing</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-gray-400 pt-1 border-t border-gray-100">
+                      <span>Starter: {starterCount}</span>
+                      <span>Growth: {growthCount}</span>
+                      <span>Scale: Unlimited</span>
+                    </div>
+                  </div>
+                )}
+                {rawTotal === 0 && <p className="text-xs text-gray-400 mt-2">Enter review counts to generate packages</p>}
+              </InputSection>
+
+              {/* Existing Catalog */}
+              <InputSection label="Existing Catalog Reviews (Kept Live)">
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 mb-1 block">Standard</label>
+                    <NumInput value={inputs.existingStandard} onChange={v => set('existingStandard', v)} className="w-full" />
+                    <p className="text-xs text-gray-400 mt-1">CHF 150/review</p>
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 mb-1 block">MDA</label>
+                    <NumInput value={inputs.existingMDA} onChange={v => set('existingMDA', v)} className="w-full" />
+                    <p className="text-xs text-gray-400 mt-1">CHF 250/review</p>
+                  </div>
+                </div>
+              </InputSection>
+
+              {/* B2B */}
+              <InputSection label="B2B / Specialist Community">
+                <div className="flex items-center gap-3 mb-3">
+                  <div onClick={() => set('b2bRequired', !inputs.b2bRequired)}
+                    className={`w-11 h-6 rounded-full cursor-pointer transition-colors shrink-0 ${inputs.b2bRequired ? 'bg-[#6B4EFF]' : 'bg-gray-300'}`}>
+                    <div className="w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-all" style={{ marginLeft: inputs.b2bRequired ? '22px' : '2px' }} />
+                  </div>
+                  <span className="text-sm text-gray-700">Specialist community required</span>
+                </div>
+                {inputs.b2bRequired && (
+                  <div className="flex gap-2">
+                    {[['low','Low','CHF 1,000'],['medium','Medium','CHF 2,500'],['high','High','CHF 5,000']].map(([v,l,p]) => (
+                      <button key={v} onClick={() => set('b2bLevel', v)}
+                        className={`flex-1 py-2 rounded-lg text-xs font-semibold border-2 text-center transition-colors ${inputs.b2bLevel === v ? 'border-[#6B4EFF] bg-[#6B4EFF] text-white' : 'border-gray-200 text-gray-600 hover:border-[#6B4EFF]'}`}>
+                        {l}<br/><span className="font-normal opacity-80">{p}/review</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </InputSection>
+
+              {/* Additional Markets */}
+              <InputSection label="Additional Markets">
+                <div className="flex items-center gap-3">
+                  <NumInput value={inputs.additionalMarkets} onChange={v => set('additionalMarkets', v)} className="w-24" />
+                  <span className="text-xs text-gray-500">beyond Switzerland (CHF 5,000/market/year)</span>
+                </div>
+                {inputs.additionalMarkets > 0 && (
+                  <p className="text-xs text-[#6B4EFF] font-medium mt-1">{1 + inputs.additionalMarkets} total markets</p>
+                )}
+              </InputSection>
+
+              {/* Loadbee */}
+              <InputSection label="Loadbee / Flixmedia Distribution">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={inputs.loadbee} onChange={e => set('loadbee', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
+                  <span className="text-sm text-gray-700">Include Loadbee/Flixmedia</span>
+                </label>
+                {inputs.loadbee && <p className="text-xs text-gray-400 mt-1">Fee: CHF 500 (CH only) · CHF 1,500 (≤17.5k) · CHF 2,500 (&gt;17.5k)</p>}
+              </InputSection>
+
+              {/* Payment Terms */}
+              <InputSection label="Payment Terms">
+                <Toggle value={inputs.paymentTerms} onChange={v => set('paymentTerms', v)} options={[
+                  { value: 'annual',    label: 'Annual Upfront' },
+                  { value: 'quarterly', label: 'Quarterly (+20%)' },
+                ]} />
+              </InputSection>
+
+              {/* Account Difficulty — INTERNAL */}
+              <InputSection internal>
+                <label className="text-sm font-semibold text-gray-700 mb-1 block">Account Difficulty</label>
+                <p className="text-xs text-gray-500 mb-3">Internal margin adjustment — per new review, never shown to customer</p>
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Easy (CHF 0)</span><span>Medium (CHF 250)</span><span>Difficult (CHF 500)</span>
+                </div>
+                <input type="range" min="0" max="100" step="50" value={difficultyPct}
+                  onChange={e => {
+                    const v = parseInt(e.target.value);
+                    set('difficulty', v === 0 ? 'easy' : v === 50 ? 'medium' : 'difficult');
+                  }}
+                  className="w-full slider-thumb accent-[#6B4EFF] h-2 rounded-lg" />
+                <div className="mt-2 text-sm font-semibold text-amber-800">
+                  {inputs.difficulty.charAt(0).toUpperCase() + inputs.difficulty.slice(1)} — CHF {DIFFICULTY_LEVELS[inputs.difficulty]}/review
+                </div>
+              </InputSection>
+            </div>
+
+            {/* ── Right: Packages + Analysis ── */}
+            <div className="flex-1 p-5 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-gray-900">
+                  Package Options{inputs.customerName ? ` — ${inputs.customerName}` : ''}
+                </h2>
+                <span className="text-xs text-gray-400 bg-white border border-gray-200 px-3 py-1.5 rounded-full">Updates in real time</span>
+              </div>
+
+              {/* Tier summary bar */}
+              {rawTotal > 0 && (
+                <div className="mb-5 bg-white border border-gray-100 rounded-xl p-3 text-xs text-gray-500 flex flex-wrap gap-x-6 gap-y-1">
+                  <span>Stated need: <strong className="text-gray-700">{rawTotal} products{formatMult > 1 ? ` × ${formatMult} formats = ${effectiveTotal} reviews` : ''}</strong></span>
+                  <span>Starter: <strong className="text-gray-700">{starterCount} reviews (exact)</strong></span>
+                  <span>Growth: <strong className="text-[#6B4EFF]">{growthCount} reviews (×1.5) ★</strong></span>
+                  <span>Scale: <strong className="text-[#FF4E8E]">Unlimited (×1.75 pricing)</strong></span>
+                </div>
+              )}
+
+              {/* Package Cards */}
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
+                <PackageCard
+                  name="Starter" tagline="Exact Stated Need"
+                  badge={null}
+                  color={{ header: 'bg-gradient-to-br from-gray-600 to-gray-800', border: 'border-gray-200' }}
+                  inputs={inputs} pkgData={packages.starter}
+                  contractLength={contractLengths.starter} setContractLength={v => setCL('starter', v)}
+                  onCopy={handleCopy}
+                />
+                <PackageCard
+                  name="Growth" tagline="Stated Need × 1.5"
+                  badge="RECOMMENDED"
+                  color={{ header: 'bg-gradient-to-br from-[#6B4EFF] to-[#8B6FFF]', border: 'border-[#6B4EFF]' }}
+                  inputs={inputs} pkgData={packages.growth}
+                  contractLength={contractLengths.growth} setContractLength={v => setCL('growth', v)}
+                  onCopy={handleCopy}
+                />
+                <PackageCard
+                  name="Scale" tagline="Unlimited in Geography"
+                  badge={null}
+                  color={{ header: 'bg-gradient-to-br from-[#FF4E8E] to-[#FF6FA8]', border: 'border-[#FF4E8E]' }}
+                  inputs={inputs} pkgData={packages.scale}
+                  contractLength={contractLengths.scale} setContractLength={v => setCL('scale', v)}
+                  onCopy={handleCopy}
+                />
+              </div>
+
+              {/* Internal: Margin + Analysis */}
+              <MarginSection inputs={inputs} packages={packages} contractLengths={contractLengths} />
+
+              {/* Quick Reference */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Quick Reference</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div>
+                    <div className="font-semibold text-gray-700 mb-1">Platform Base</div>
+                    <div className="text-gray-500">CHF 15,000/year</div>
+                    <div className="text-gray-500">Incl. 15 reviews</div>
+                    <div className="text-gray-500">Max 6/quarter</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-gray-700 mb-1">New Reviews (above 6)</div>
+                    <div className="text-gray-500">Std gifted: CHF 500</div>
+                    <div className="text-gray-500">MDA gifted: CHF 800</div>
+                    <div className="text-gray-500">Std loan: +CHF 500 surcharge</div>
+                    <div className="text-gray-500">MDA loan: +CHF 850 surcharge</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-gray-700 mb-1">Existing Catalog</div>
+                    <div className="text-gray-500">Standard: CHF 150</div>
+                    <div className="text-gray-500">MDA: CHF 250</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-gray-700 mb-1">Packages</div>
+                    <div className="text-gray-500">Starter: exact need</div>
+                    <div className="text-[#6B4EFF] font-medium">Growth: ×1.5 ★</div>
+                    <div className="text-[#FF4E8E] font-medium">Scale: unlimited</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
