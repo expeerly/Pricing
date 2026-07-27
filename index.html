@@ -18,12 +18,26 @@
 <body class="bg-gray-50 min-h-screen">
   <div id="root"></div>
 
-  <script type="text/babel">
+  <script type="text/babel" data-presets="react">
     const { useState, useMemo } = React;
 
     // ── Currency-specific price tables ─────────────────────────────────────────
-    const BASE_REVIEWS   = 15;
     const QUARTERLY_MULT = 1.20;
+
+    // Recruiting level configuration — base budget in standard-equivalent units
+    const RECRUITING_BASE_REVIEWS = { 1: 15, 2: 9, 3: 6 };
+    const RECRUITING_SURCHARGE    = { 1: 0, 2: 400, 3: 1500 }; // per review, same CHF & EUR
+
+    const RECRUITING_LABELS = {
+      1: 'Level 1 — Standard Screening',
+      2: 'Level 2 — Specific Screening',
+      3: 'Level 3 — Advanced Screening OR Veto Rights',
+    };
+    const RECRUITING_DESC = {
+      1: 'One broad screening question. Criteria include basic demographics: age range, gender, and all languages spoken in the target market. Best for mainstream consumer products with a wide target audience.',
+      2: 'Targeted criteria beyond standard demographics. Examples: parental status (e.g. breastfeeding mothers), willingness to perform a specific task (e.g. mount and unmount a TV, go on a long hike wearing the shoes), specific age bracket, or a single language in a multilingual market. Best for products with a defined niche or where fit with the reviewer matters.',
+      3: 'Multiple detailed screening criteria combined, OR client veto rights on individual reviewers. Typically for professional or business-use products. Examples: self-employed professionals, small business owners, office managers. Best when the reviewer profile needs to be tightly controlled, or the client requires approval over individual assignments.',
+    };
 
     const STATIC_PRICES = {
       chf: {
@@ -31,7 +45,7 @@
         onboardingFee: 1750,
         existingStd:    150,
         existingMDA:    250,
-        b2b: { low: 1000, medium: 2500, high: 5000 },
+        voiceover:      200,
         loadbee: { ch: 500, otherSmall: 1500, otherLarge: 2500, threshold: 17500 },
       },
       eur: {
@@ -39,7 +53,7 @@
         onboardingFee: 1750,
         existingStd:    200,
         existingMDA:    300,
-        b2b: { low: 1000, medium: 2500, high: 5000 },
+        voiceover:      150,
         loadbee: { ch: 500, otherSmall: 1500, otherLarge: 2500, threshold: 17500 },
       },
     };
@@ -53,12 +67,12 @@
 
     const DEFAULT_PRICING_CONFIG = {
       chf: {
-        basePrice:    { standardGifted: 500, mdaGifted: 800, standardLoan: 500, mdaLoan: 800, cheapProduct: 250 },
+        basePrice:    { standardGifted: 600, mdaGifted: 800, standardLoan: 500, mdaLoan: 800, cheapProduct: 250 },
         loanSurcharge:{ standardLoan: 500, mdaLoan: 850 },
         tiers: TIERS_DEFAULT,
       },
       eur: {
-        basePrice:    { standardGifted: 550, mdaGifted: 850, standardLoan: 550, mdaLoan: 850, cheapProduct: 250 },
+        basePrice:    { standardGifted: 650, mdaGifted: 850, standardLoan: 550, mdaLoan: 850, cheapProduct: 250 },
         loanSurcharge:{ standardLoan: 550, mdaLoan: 900 },
         tiers: TIERS_DEFAULT,
       },
@@ -71,6 +85,11 @@
     ];
 
     const ALL_KEYS = ['standardGifted', 'mdaGifted', 'standardLoan', 'mdaLoan', 'cheapProduct'];
+
+    // How many reviews of each type are covered per unit of base budget (divisible by 3)
+    const BASE_COUNTS_PER_TYPE = { standardGifted: 15, mdaGifted: 12, standardLoan: 9, mdaLoan: 6, cheapProduct: 9 };
+    // Equiv weight = standard-equivalent units consumed per review of each type
+    const BASE_EQUIV_WEIGHT = Object.fromEntries(ALL_KEYS.map(k => [k, 15 / BASE_COUNTS_PER_TYPE[k]]));
 
     // ── Helpers ────────────────────────────────────────────────────────────────
     const fmt    = (n, currency) => (currency === 'eur' ? '€' : 'CHF ') + Math.round(n).toLocaleString('de-CH');
@@ -152,26 +171,47 @@
     function calcPackage(pkgInputs, shared, pricingConfig, prices) {
       const formatMult   = pkgInputs.reviewFormat === 'both' ? 2 : 1;
       const effectiveMix = applyFormatMultiplier(pkgInputs.reviewMix, formatMult);
-      const targetTotal  = Math.max(BASE_REVIEWS, mixTotal(effectiveMix));
-      const scaledMix    = scaleMix(effectiveMix, targetTotal);
+
+      // Base budget in standard-equivalent units (varies by recruiting level)
+      const baseBudget = RECRUITING_BASE_REVIEWS[pkgInputs.recruitingLevel] || 15;
+
+      // Total standard-equivalent reviews in the mix
+      const totalEquiv = ALL_KEYS.reduce((s, k) => s + (effectiveMix[k] || 0) * BASE_EQUIV_WEIGHT[k], 0);
+      const totalCount = mixTotal(effectiveMix);
+
+      // Base capacity rounds UP (no fractional reviews), e.g. 4.8 MDA → 5 in base
+      const baseCapacity = totalCount > 0 && totalEquiv > 0
+        ? Math.ceil(baseBudget * totalCount / totalEquiv)
+        : baseBudget;
+
+      // Fraction of the mix above base (count-based after ceiling)
+      const aboveFraction = totalCount > baseCapacity ? (totalCount - baseCapacity) / totalCount : 0;
+
+      // Split mix proportionally into within-base and above-base
+      const aboveMix = {};
+      ALL_KEYS.forEach(k => aboveMix[k] = (effectiveMix[k] || 0) * aboveFraction);
+      const aboveCount = ALL_KEYS.reduce((s, k) => s + (aboveMix[k] || 0), 0);
 
       const existingStdFee = pkgInputs.existingStandard * prices.existingStd;
       const existingMDAFee = pkgInputs.existingMDA * prices.existingMDA;
       const existingFee    = existingStdFee + existingMDAFee;
 
-      const aboveBase     = Math.max(0, targetTotal - BASE_REVIEWS);
-      const aboveMix      = aboveBase > 0 ? scaleMix(effectiveMix, aboveBase) : emptyMix();
-      const newRevFee     = calcTieredFee(aboveMix, aboveBase, pricingConfig);
-      const tierBreakdown = calcTierBreakdown(aboveMix, aboveBase, pricingConfig);
+      const newRevFee     = calcTieredFee(aboveMix, aboveCount, pricingConfig);
+      const tierBreakdown = calcTierBreakdown(aboveMix, aboveCount, pricingConfig);
 
+      // Loan surcharge applies only to above-base loan reviews (base absorption covers within-base)
       const loanSurcharge =
-        (scaledMix.standardLoan || 0) * pricingConfig.loanSurcharge.standardLoan +
-        (scaledMix.mdaLoan      || 0) * pricingConfig.loanSurcharge.mdaLoan;
+        (aboveMix.standardLoan || 0) * pricingConfig.loanSurcharge.standardLoan +
+        (aboveMix.mdaLoan      || 0) * pricingConfig.loanSurcharge.mdaLoan;
 
-      const b2bFee     = shared.b2bRequired ? prices.b2b[shared.b2bLevel] * targetTotal : 0;
-      const onboardingFee = shared.newCustomer ? prices.onboardingFee : 0;
+      // Recruiting surcharge applies only to reviews above base
+      const recruitingSurchargeRate = RECRUITING_SURCHARGE[pkgInputs.recruitingLevel] || 0;
+      const recruitingFee           = recruitingSurchargeRate * aboveCount;
+      const onboardingFee           = shared.newCustomer ? prices.onboardingFee : 0;
 
-      const subTotal   = prices.platformFee + existingFee + newRevFee + loanSurcharge + b2bFee;
+      const voiceoverFee = (pkgInputs.voiceoverLanguages || 0) * prices.voiceover;
+
+      const subTotal   = prices.platformFee + existingFee + newRevFee + loanSurcharge + recruitingFee + voiceoverFee;
       const loadbeeFee = shared.loadbee ? getLoadbeeFee(subTotal, shared.loadbeeRegion === 'ch', prices) : 0;
 
       const csMult     = shared.csRequired ? (1 + shared.csSurcharge / 100) : 1;
@@ -184,8 +224,8 @@
       const cl             = pkgInputs.contractLength;
       const totalContract  = annualCustomer * cl + onboardingFee;
 
-      const newStd = (scaledMix.standardGifted || 0) + (scaledMix.standardLoan || 0) + (scaledMix.cheapProduct || 0);
-      const newMDA = (scaledMix.mdaGifted || 0) + (scaledMix.mdaLoan || 0);
+      const newStd = (effectiveMix.standardGifted || 0) + (effectiveMix.standardLoan || 0) + (effectiveMix.cheapProduct || 0);
+      const newMDA = (effectiveMix.mdaGifted || 0) + (effectiveMix.mdaLoan || 0);
       const yearlyIncrease = newStd * prices.existingStd + newMDA * prices.existingMDA;
       let savings = null;
       if (cl > 1 && yearlyIncrease > 0) {
@@ -194,9 +234,10 @@
       }
 
       return {
-        targetTotal, scaledMix, aboveMix, aboveBase, effectiveMix, formatMult,
+        totalCount, aboveMix, aboveCount, effectiveMix, formatMult,
+        baseBudget, totalEquiv, aboveFraction, baseCapacity,
         existingStdFee, existingMDAFee, existingFee,
-        newRevFee, loanSurcharge, b2bFee, tierBreakdown,
+        newRevFee, loanSurcharge, recruitingFee, recruitingSurchargeRate, tierBreakdown, voiceoverFee,
         csFee, loadbeeFee, onboardingFee, subTotal, annualBase,
         annualCustomer, quarterlyAmt, totalContract, savings,
       };
@@ -227,9 +268,12 @@
     }
 
     function NumInput({ value, onChange, className }) {
+      const [local, setLocal] = React.useState(String(value));
+      React.useEffect(() => { setLocal(String(value)); }, [value]);
       return (
-        <input type="number" min="0" value={value}
-          onChange={e => onChange(Math.max(0, parseInt(e.target.value) || 0))}
+        <input type="number" min="0" value={local}
+          onChange={e => { setLocal(e.target.value); onChange(Math.max(0, parseInt(e.target.value) || 0)); }}
+          onBlur={() => setLocal(String(value))}
           className={`border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#6B4EFF] ${className || ''}`}
         />
       );
@@ -255,38 +299,38 @@
       const f             = n => fmt(n, currency);
 
       const items = [];
-      const perQ = Math.ceil(data.targetTotal / 4);
-      items.push({ text: `Up to ${data.targetTotal} new reviews/year (up to ${perQ}/quarter)` });
+      items.push({ text: `Up to ${data.totalCount} new reviews/year` });
 
       const typeLines = [];
-      if ((data.scaledMix.standardGifted || 0) > 0) typeLines.push(`${data.scaledMix.standardGifted} standard gifted`);
-      if ((data.scaledMix.mdaGifted      || 0) > 0) typeLines.push(`${data.scaledMix.mdaGifted} MDA gifted`);
-      if ((data.scaledMix.standardLoan   || 0) > 0) typeLines.push(`${data.scaledMix.standardLoan} standard loan`);
-      if ((data.scaledMix.mdaLoan        || 0) > 0) typeLines.push(`${data.scaledMix.mdaLoan} MDA loan`);
-      if ((data.scaledMix.cheapProduct   || 0) > 0) typeLines.push(`${data.scaledMix.cheapProduct} cheap product (<${f(100)})`);
+      if ((data.effectiveMix.standardGifted || 0) > 0) typeLines.push(`${data.effectiveMix.standardGifted} standard gifted`);
+      if ((data.effectiveMix.mdaGifted      || 0) > 0) typeLines.push(`${data.effectiveMix.mdaGifted} MDA gifted`);
+      if ((data.effectiveMix.standardLoan   || 0) > 0) typeLines.push(`${data.effectiveMix.standardLoan} standard loan`);
+      if ((data.effectiveMix.mdaLoan        || 0) > 0) typeLines.push(`${data.effectiveMix.mdaLoan} MDA loan`);
+      if ((data.effectiveMix.cheapProduct   || 0) > 0) typeLines.push(`${data.effectiveMix.cheapProduct} cheap product (<${f(100)})`);
       if (typeLines.length > 0) items.push({ text: typeLines.join(' · '), sub: true });
 
       items.push({ text: bothFmts ? 'Both formats: vertical + horizontal' : 'Single format (vertical or horizontal)' });
-      items.push({ text: `Full usage rights + syndication for up to ${data.targetTotal} new reviews — current subscription year only` });
+      items.push({ text: `Full usage rights + syndication for ${data.totalCount} new reviews — current subscription year only` });
 
       if (totalExisting > 0) {
         const parts = [];
         if (pkgInputs.existingStandard > 0) parts.push(`${pkgInputs.existingStandard} standard (${f(prices.existingStd)} each)`);
         if (pkgInputs.existingMDA      > 0) parts.push(`${pkgInputs.existingMDA} MDA (${f(prices.existingMDA)} each)`);
-        items.push({ text: `${totalExisting} existing catalog review${totalExisting > 1 ? 's' : ''} kept live` });
+        items.push({ text: `${totalExisting} existing review${totalExisting > 1 ? 's' : ''} kept live — usage rights + syndication for current subscription year` });
         items.push({ text: parts.join(' · '), sub: true });
-        items.push({ text: `Usage rights + syndication for ${totalExisting} existing reviews — current subscription year only` });
       } else {
         items.push({ text: '0 existing reviews this year — usage rights + syndication will apply from year 2 onwards' });
       }
 
+      if ((pkgInputs.voiceoverLanguages || 0) > 0) items.push({ text: `Voice-overs in ${pkgInputs.voiceoverLanguages} language${pkgInputs.voiceoverLanguages > 1 ? 's' : ''}` });
       items.push({ text: 'AI translations + subtitles in all languages' });
+      items.push({ text: 'Expeerly search and social channels' });
       items.push({ text: 'Expeerly Platform Access' });
       items.push({ text: 'Access to global reviewer community' });
       items.push({ text: 'Web Widget available' });
       items.push({ text: 'Option to use content for performance marketing (Service Fee applies if Expeerly channels)' });
-      if (shared.loadbee)     items.push({ text: 'Loadbee & Flixmedia distribution' });
-      if (shared.b2bRequired) items.push({ text: `B2B/Specialist community — ${shared.b2bLevel} level` });
+      if (shared.loadbee) items.push({ text: 'Loadbee & Flixmedia distribution' });
+      items.push({ text: RECRUITING_LABELS[pkgInputs.recruitingLevel] });
       items.push({ text: isQ ? `Quarterly payments (4 × ${f(data.quarterlyAmt)})` : 'Annual upfront payment' });
       items.push({ text: isMultiYr ? `${cl}-year subscription (ESA applies) — price frozen at today's rate` : '1-year subscription (ESA applies)' });
 
@@ -326,22 +370,14 @@
 
             <div className="space-y-1">
               <div className="font-semibold text-gray-700 text-sm mb-1.5">Price Breakdown:</div>
-              <Row label={`Platform fee (incl. ${BASE_REVIEWS} base reviews)`} val={f(prices.platformFee)} />
-              {data.existingStdFee > 0 && <Row label={`${pkgInputs.existingStandard} existing standard @ ${f(prices.existingStd)}`} val={f(data.existingStdFee)} indent />}
-              {data.existingMDAFee > 0 && <Row label={`${pkgInputs.existingMDA} existing MDA @ ${f(prices.existingMDA)}`} val={f(data.existingMDAFee)} indent />}
-              {data.aboveBase > 0 && (
-                <>
-                  <Row label={`${data.aboveBase} new reviews above base`} val={f(data.newRevFee)} indent />
-                  {data.tierBreakdown.filter(t => t.count > 0).map((t, i) => (
-                    <Row key={i} label={`  Reviews ${t.label}${t.discount > 0 ? ` (−${fmtPct(t.discount)})` : ' (full price)'}`} val={`${t.count} reviews`} sub />
-                  ))}
-                </>
-              )}
-              {(data.scaledMix.standardLoan || 0) > 0 && <Row label={`${data.scaledMix.standardLoan} std loan surcharge`} val={f((data.scaledMix.standardLoan || 0) * prices.loadbee.ch /* placeholder — use pricingConfig */)} indent />}
-              {(data.scaledMix.mdaLoan      || 0) > 0 && <Row label={`${data.scaledMix.mdaLoan} MDA loan surcharge`} val={f(data.loanSurcharge - (data.scaledMix.standardLoan || 0) * 0)} indent />}
-              {data.b2bFee     > 0 && <Row label={`B2B/Specialist (${shared.b2bLevel}) × ${data.targetTotal}`} val={f(data.b2bFee)} indent />}
-              {data.loadbeeFee > 0 && <Row label="Loadbee/Flixmedia" val={f(data.loadbeeFee)} indent />}
-              {data.csFee      > 0 && <Row label={`Advanced CS requirement (+${shared.csSurcharge}%)`} val={f(data.csFee)} indent />}
+              <Row label={`Platform fee (incl. up to ${data.baseCapacity}-review base)`} val={f(prices.platformFee)} />
+              {data.existingFee      > 0 && <Row label={`Annual syndication ${totalExisting} existing catalog review${totalExisting > 1 ? 's' : ''}`} val={f(data.existingFee)} indent />}
+              {data.loanSurcharge    > 0 && <Row label="Loan product handling surcharge" val={f(data.loanSurcharge)} indent />}
+              {data.aboveCount       > 0 && <Row label={`${Math.round(data.aboveCount)} additional reviews (above base)`} val={f(data.newRevFee)} indent />}
+              {data.recruitingFee    > 0 && <Row label={`Recruiting surcharge — Level ${pkgInputs.recruitingLevel} (${Math.round(data.aboveCount)} reviews × +${fmt(data.recruitingSurchargeRate, currency)}/review)`} val={f(data.recruitingFee)} indent />}
+              {data.voiceoverFee  > 0 && <Row label={`Voice-overs — ${pkgInputs.voiceoverLanguages} language${pkgInputs.voiceoverLanguages > 1 ? 's' : ''} × ${fmt(prices.voiceover, currency)}`} val={f(data.voiceoverFee)} indent />}
+              {data.loadbeeFee    > 0 && <Row label="Loadbee/Flixmedia" val={f(data.loadbeeFee)} indent />}
+              {data.csFee         > 0 && <Row label={`Advanced CS requirement (+${shared.csSurcharge}%)`} val={f(data.csFee)} indent />}
               {isQ && <Row label="Quarterly surcharge (+20%)" val={`+${f(data.annualBase * 0.20)}`} accent />}
               {shared.newCustomer && <Row label="One-time onboarding fee" val={f(prices.onboardingFee)} indent />}
               <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1 text-sm">
@@ -386,12 +422,8 @@
       const INPUT = 'w-20 border border-gray-200 rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-1 focus:ring-[#6B4EFF]';
 
       return (
-        <div className="internal-badge rounded-xl border border-yellow-300 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div className="text-sm font-bold text-amber-800 uppercase tracking-wide">🔒 Pricing Configuration — Internal</div>
-              <div className="text-xs text-amber-700 mt-0.5">Changes apply to all packages in real time · Currently showing {currency.toUpperCase()} prices</div>
-            </div>
+        <div className="p-5">
+          <div className="flex justify-end mb-4">
             <button onClick={() => setConfig(defaultConfig)}
               className="text-xs text-amber-700 border border-amber-400 px-3 py-1.5 rounded-lg hover:bg-amber-100 font-medium">
               Reset to defaults
@@ -400,7 +432,7 @@
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div>
-              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Base Prices (above {BASE_REVIEWS} base reviews)</div>
+              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Base Prices (above base reviews)</div>
               <div className="bg-white/70 rounded-lg overflow-hidden border border-yellow-200">
                 <table className="w-full text-xs">
                   <thead>
@@ -460,7 +492,7 @@
             </div>
 
             <div className="lg:col-span-2">
-              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Volume Discount Tiers (reviews above base {BASE_REVIEWS})</div>
+              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Volume Discount Tiers (reviews above base)</div>
               <div className="bg-white/70 rounded-lg overflow-hidden border border-yellow-200">
                 <table className="w-full text-xs">
                   <thead>
@@ -525,14 +557,26 @@
 
     // ── Per-package Input Panel ────────────────────────────────────────────────
     const REVIEW_TYPE_ROWS = [
-      { key: 'standardGifted', label: 'Standard gifted reviews',  hint: 'Volume pricing applies (see config below)' },
-      { key: 'mdaGifted',      label: 'MDA gifted reviews',       hint: 'Incl. MDA surcharge — volume pricing applies' },
-      { key: 'standardLoan',   label: 'Standard loan products',   hint: 'Per-review price + surcharge/product' },
-      { key: 'mdaLoan',        label: 'MDA loan products',        hint: 'Per-review price + surcharge/product' },
-      { key: 'cheapProduct',   label: 'Cheap product (<CHF/€100)', hint: 'Flat price/review — no surcharge' },
+      { key: 'standardGifted', label: 'Standard gifted reviews' },
+      { key: 'mdaGifted',      label: 'MDA gifted reviews' },
+      { key: 'standardLoan',   label: 'Standard loan products' },
+      { key: 'mdaLoan',        label: 'MDA loan products' },
+      { key: 'cheapProduct',   label: 'Cheap product (<CHF/€100)' },
     ];
 
-    function PackageInputs({ pkg, setPkg, isDirty, sourceLabel, onReset }) {
+    function InfoTip({ text }) {
+      return (
+        <div className="relative group inline-block ml-1 align-middle">
+          <span className="text-[10px] w-4 h-4 inline-flex items-center justify-center rounded-full bg-gray-200 text-gray-500 cursor-help font-bold leading-none">i</span>
+          <div className="absolute left-0 bottom-full mb-1.5 z-50 w-72 bg-gray-900 text-white text-xs rounded-lg p-2.5 leading-snug opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity shadow-lg">
+            {text}
+            <div className="absolute left-2 top-full w-2 h-2 bg-gray-900 rotate-45 -mt-1" />
+          </div>
+        </div>
+      );
+    }
+
+    function PackageInputs({ pkg, setPkg, isDirty, sourceLabel, onReset, currency, prices }) {
       const setMix = (k, v) => setPkg(p => ({ ...p, reviewMix: { ...p.reviewMix, [k]: v } }));
       const set    = (k, v) => setPkg(p => ({ ...p, [k]: v }));
       const rawTotal  = mixTotal(pkg.reviewMix);
@@ -586,10 +630,7 @@
               {REVIEW_TYPE_ROWS.map(row => (
                 <div key={row.key} className="flex items-start gap-3">
                   <NumInput value={pkg.reviewMix[row.key]} onChange={v => setMix(row.key, v)} className="w-20 shrink-0" />
-                  <div>
-                    <div className="text-sm font-medium text-gray-700">{row.label}</div>
-                    <div className="text-xs text-gray-400">{row.hint}</div>
-                  </div>
+                  <div className="text-sm font-medium text-gray-700">{row.label}</div>
                 </div>
               ))}
             </div>
@@ -603,10 +644,34 @@
                 )}
                 <div className="flex justify-between text-gray-500">
                   <span>Total priced:</span>
-                  <span className="font-semibold text-gray-700">up to {Math.max(BASE_REVIEWS, effective)} reviews (min. {BASE_REVIEWS})</span>
+                  <span className="font-semibold text-gray-700">up to {effective} reviews</span>
                 </div>
               </div>
             )}
+          </Section>
+
+          <Section label="Recruiting Level">
+            <div className="flex flex-col gap-1.5">
+              {[1, 2, 3].map(lvl => {
+                const surcharge = RECRUITING_SURCHARGE[lvl];
+                const baseRev   = RECRUITING_BASE_REVIEWS[lvl];
+                const active    = pkg.recruitingLevel === lvl;
+                return (
+                  <button key={lvl} onClick={() => set('recruitingLevel', lvl)}
+                    className={`w-full text-left px-3 py-2 rounded-xl border-2 transition-colors ${active ? 'border-[#6B4EFF] bg-purple-50' : 'border-gray-200 bg-white hover:border-[#6B4EFF]/40'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-bold ${active ? 'text-[#6B4EFF]' : 'text-gray-700'}`}>
+                        {RECRUITING_LABELS[lvl]}
+                        <InfoTip text={RECRUITING_DESC[lvl]} />
+                      </span>
+                      <span className={`text-xs font-semibold shrink-0 ml-2 ${active ? 'text-[#6B4EFF]' : 'text-gray-500'}`}>
+                        {surcharge === 0 ? `${baseRev} base` : `+${fmt(surcharge, currency)}/add. · ${baseRev} base`}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </Section>
 
           <Section label="Existing Catalog Reviews (Kept Live)">
@@ -630,6 +695,16 @@
               <p className="text-xs text-gray-500 mt-2">Price frozen — locks in today's rate for all {pkg.contractLength} years</p>
             )}
           </Section>
+
+          <Section label="Voice-overs">
+            <div className="flex items-center gap-3">
+              <NumInput value={pkg.voiceoverLanguages} onChange={v => set('voiceoverLanguages', v)} className="w-20 shrink-0" />
+              <div>
+                <div className="text-sm font-medium text-gray-700">Languages</div>
+                <div className="text-xs text-gray-400">{fmt(prices.voiceover, currency)}/language · one-time per contract year</div>
+              </div>
+            </div>
+          </Section>
         </div>
       );
     }
@@ -644,6 +719,8 @@
       existingStandard: 0,
       existingMDA:      0,
       contractLength:   1,
+      recruitingLevel:     1,
+      voiceoverLanguages:  0,
     });
 
     function effectivePkg(pkgs, i) {
@@ -656,11 +733,9 @@
     function App() {
       const [currency, setCurrency] = useState('chf');
       const [shared, setShared] = useState({
-        customerName:  '',
-        newCustomer:   false,
-        b2bRequired:   false,
-        b2bLevel:      'medium',
-        csRequired:    false,
+        customerName:     '',
+        newCustomer:      false,
+        csRequired:       false,
         csSurcharge:   20,
         loadbee:       false,
         loadbeeRegion: 'ch',
@@ -673,6 +748,7 @@
       const [pricingConfigCHF, setPricingConfigCHF] = useState(DEFAULT_PRICING_CONFIG.chf);
       const [pricingConfigEUR, setPricingConfigEUR] = useState(DEFAULT_PRICING_CONFIG.eur);
       const [activeTab, setActiveTab] = useState(0);
+      const [configOpen, setConfigOpen] = useState(false);
 
       const setS = (k, v) => setShared(p => ({ ...p, [k]: v }));
 
@@ -694,8 +770,6 @@
         () => effectivePkgs.map(pkg => calcPackage(pkg, shared, activePricingConfig, activeStaticPrices)),
         [effectivePkgs, shared, activePricingConfig, activeStaticPrices]
       );
-
-      const diffPct = { easy: 0, medium: 50, difficult: 100 }[shared.difficulty] || 0;
 
       return (
         <div className="min-h-screen bg-gray-50">
@@ -738,28 +812,6 @@
                     <input type="checkbox" checked={shared.newCustomer} onChange={e => setS('newCustomer', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
                     <span className="text-sm text-gray-700">New customer <span className="text-gray-400">(+{fmt(activeStaticPrices.onboardingFee, currency)} onboarding)</span></span>
                   </label>
-                </div>
-
-                {/* B2B */}
-                <div className="mt-3 pt-3 border-t border-gray-100">
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">B2B / Specialist</div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <div onClick={() => setS('b2bRequired', !shared.b2bRequired)}
-                      className={`w-11 h-6 rounded-full cursor-pointer transition-colors shrink-0 ${shared.b2bRequired ? 'bg-[#6B4EFF]' : 'bg-gray-300'}`}>
-                      <div className="w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-all" style={{ marginLeft: shared.b2bRequired ? '22px' : '2px' }} />
-                    </div>
-                    <span className="text-sm text-gray-700">Specialist community required</span>
-                  </div>
-                  {shared.b2bRequired && (
-                    <div className="flex gap-2">
-                      {[['low','Low'],['medium','Medium'],['high','High']].map(([v,l]) => (
-                        <button key={v} onClick={() => setS('b2bLevel', v)}
-                          className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 text-center transition-colors ${shared.b2bLevel === v ? 'border-[#6B4EFF] bg-[#6B4EFF] text-white' : 'border-gray-200 text-gray-600 hover:border-[#6B4EFF]'}`}>
-                          {l}<br /><span className="font-normal opacity-80">{fmt(activeStaticPrices.b2b[v], currency)}/review</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
 
                 {/* Loadbee */}
@@ -834,6 +886,8 @@
                     sourceLabel={activeTab > 0 ? (effectivePkgs[activeTab - 1].name || `Package ${activeTab}`) : null}
                     setPkg={updater => setPkg(activeTab, updater)}
                     onReset={() => resetPkg(activeTab)}
+                    currency={currency}
+                    prices={activeStaticPrices}
                   />
                 </div>
               </div>
@@ -855,12 +909,26 @@
                 ))}
               </div>
 
-              <PricingConfigTable
-                config={activePricingConfig}
-                setConfig={setActivePricingConfig}
-                currency={currency}
-                defaultConfig={DEFAULT_PRICING_CONFIG[currency]}
-              />
+              <div className="internal-badge rounded-xl border border-yellow-300 overflow-hidden">
+                <button onClick={() => setConfigOpen(o => !o)}
+                  className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-yellow-100/50 transition-colors">
+                  <div>
+                    <span className="text-sm font-bold text-amber-800 uppercase tracking-wide">🔒 Pricing Configuration — Internal</span>
+                    <span className="text-xs text-amber-700 ml-3">Changes apply to all packages in real time · {currency.toUpperCase()}</span>
+                  </div>
+                  <span className="text-amber-700 text-lg font-bold">{configOpen ? '▲' : '▼'}</span>
+                </button>
+                {configOpen && (
+                  <div className="border-t border-yellow-300">
+                    <PricingConfigTable
+                      config={activePricingConfig}
+                      setConfig={setActivePricingConfig}
+                      currency={currency}
+                      defaultConfig={DEFAULT_PRICING_CONFIG[currency]}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
