@@ -53,7 +53,7 @@
         onboardingFee: 1750,
         existingStd:    200,
         existingMDA:    300,
-        voiceover:      150,
+        voiceover:      200,
         loadbee: { ch: 500, otherSmall: 1500, otherLarge: 2500, threshold: 17500 },
       },
     };
@@ -720,6 +720,229 @@
       );
     }
 
+    // ── Community Reviews ─────────────────────────────────────────────────────
+    const COMMUNITY_PKGS = [
+      { id: 'starter', label: 'Starter', reviews: 100  },
+      { id: 'growth',  label: 'Growth',  reviews: 250  },
+      { id: 'scale',   label: 'Scale',   reviews: 1000 },
+    ];
+    const COMMUNITY_STATIC = {
+      chf: { packages: { starter: 75, growth: 60, scale: 50 }, platformFee: 2500, maintenance: 15, onboarding: 1750, costBasis: 25 },
+      eur: { packages: { starter: 80, growth: 65, scale: 55 }, platformFee: 2650, maintenance: 20, onboarding: 1750, costBasis: 27 },
+    };
+    const COMMUNITY_MIN    = { chf: 10000, eur: 10650 };
+    const COMMUNITY_MARGIN = { starter: 3, growth: 2.4, scale: 2 };
+
+    const DEFAULT_COMMUNITY = { packageId: 'starter', year: 1, existingReviews: 0, newCustomer: false, contractLength: 1 };
+
+    function calcCommunity(cfg, currency) {
+      const prices      = COMMUNITY_STATIC[currency];
+      const pkg         = COMMUNITY_PKGS.find(p => p.id === cfg.packageId) || COMMUNITY_PKGS[0];
+      const ppr         = prices.packages[pkg.id];
+      const platformFee    = prices.platformFee;
+      const reviewsFee     = pkg.reviews * ppr;
+      const maintenanceFee = cfg.year === 2 ? (cfg.existingReviews || 0) * prices.maintenance : 0;
+      const onboardingFee  = cfg.newCustomer ? prices.onboarding : 0;
+      const annual         = platformFee + reviewsFee + maintenanceFee;
+      const totalContract  = annual * cfg.contractLength + onboardingFee;
+      return { pkg, ppr, platformFee, reviewsFee, maintenanceFee, onboardingFee, annual, totalContract,
+               margin: COMMUNITY_MARGIN[pkg.id], costBasisTotal: pkg.reviews * prices.costBasis,
+               belowMin: annual < COMMUNITY_MIN[currency] };
+    }
+
+    function CommunityReviewsPage({ cfg, setCfg, currency }) {
+      const set    = (k, v) => setCfg(p => ({ ...p, [k]: v }));
+      const prices = COMMUNITY_STATIC[currency];
+      const data   = useMemo(() => calcCommunity(cfg, currency), [cfg, currency]);
+      const f      = n => fmt(n, currency);
+      const sym    = currency === 'eur' ? '€' : 'CHF';
+
+      return (
+        <div className="flex flex-col lg:flex-row min-h-[calc(100vh-105px)]">
+          {/* Left panel */}
+          <div className="lg:w-[440px] shrink-0 bg-gray-50 border-r border-gray-200 flex flex-col overflow-y-auto">
+            <div className="p-5 space-y-0">
+
+              <Section label="Customer">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={cfg.newCustomer} onChange={e => set('newCustomer', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
+                  <span className="text-sm text-gray-700">New customer <span className="text-gray-400">(+{f(prices.onboarding)} onboarding)</span></span>
+                </label>
+              </Section>
+
+              <Section label="Package">
+                <div className="flex flex-col gap-2">
+                  {COMMUNITY_PKGS.map(pkg => {
+                    const ppr    = prices.packages[pkg.id];
+                    const active = cfg.packageId === pkg.id;
+                    return (
+                      <button key={pkg.id} onClick={() => set('packageId', pkg.id)}
+                        className={`w-full text-left px-3 py-3 rounded-xl border-2 transition-colors ${active ? 'border-[#6B4EFF] bg-purple-50' : 'border-gray-200 bg-white hover:border-[#6B4EFF]/40'}`}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className={`text-sm font-bold ${active ? 'text-[#6B4EFF]' : 'text-gray-800'}`}>{pkg.label}</div>
+                            <div className="text-xs text-gray-500 mt-0.5">Up to {pkg.reviews.toLocaleString('de-CH')} reviews</div>
+                          </div>
+                          <div className={`text-right shrink-0 ml-3 ${active ? 'text-[#6B4EFF]' : 'text-gray-600'}`}>
+                            <div className="text-sm font-bold">{sym} {ppr}/review</div>
+                            <div className="text-xs text-gray-400">{f(pkg.reviews * ppr)}/yr</div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Section>
+
+              <Section label="Contract Year">
+                <Toggle value={cfg.year} onChange={v => set('year', v)} options={[
+                  { value: 1, label: 'Year 1 (New)' },
+                  { value: 2, label: 'Year 2+ (Renewal)' },
+                ]} />
+                {cfg.year === 2 && (
+                  <div className="mt-3">
+                    <label className="text-xs text-gray-500 mb-1 block">Existing Community Reviews to maintain</label>
+                    <NumInput value={cfg.existingReviews} onChange={v => set('existingReviews', v)} className="w-full" />
+                    {cfg.existingReviews > 0 && (
+                      <p className="text-xs text-[#6B4EFF] mt-1">{cfg.existingReviews} × {f(prices.maintenance)} = {f(cfg.existingReviews * prices.maintenance)}/yr</p>
+                    )}
+                  </div>
+                )}
+              </Section>
+
+              <Section label="Contract Length">
+                <Toggle value={cfg.contractLength} onChange={v => set('contractLength', v)} options={[
+                  { value: 1, label: '1 Year' }, { value: 2, label: '2 Years' }, { value: 3, label: '3 Years' },
+                ]} />
+              </Section>
+
+              <Section internal>
+                <div className="text-xs font-semibold text-amber-800 mb-2">Cost Basis & Margin</div>
+                <div className="space-y-1 text-xs">
+                  {[
+                    ['Cost basis/review', `${sym} ${prices.costBasis}`],
+                    [`Total cost (${data.pkg.reviews} reviews)`, f(data.costBasisTotal)],
+                    [`Margin — ${data.pkg.label}`, `${data.margin}×`],
+                  ].map(([label, val]) => (
+                    <div key={label} className="flex justify-between text-amber-700">
+                      <span>{label}</span><span className="font-semibold">{val}</span>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            </div>
+          </div>
+
+          {/* Right panel */}
+          <div className="flex-1 p-5 overflow-y-auto">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-gray-900">Community Reviews Package</h2>
+              <span className="text-xs text-gray-400 bg-white border border-gray-200 px-3 py-1.5 rounded-full">Updates in real time</span>
+            </div>
+
+            {data.belowMin && (
+              <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 text-sm text-amber-800 font-medium">
+                ⚠ Below minimum contract value ({f(COMMUNITY_MIN[currency])}) — review pricing before presenting.
+              </div>
+            )}
+
+            <div className="max-w-md">
+              <div className="rounded-2xl border-2 border-[#6B4EFF] bg-white shadow-sm">
+                <div className="bg-gradient-to-br from-[#6B4EFF] to-[#8B6FFF] rounded-t-2xl px-5 py-4">
+                  <div className="text-xs font-bold uppercase tracking-widest text-white/70 mb-1">Community Reviews</div>
+                  <div className="text-xl font-bold text-white">{data.pkg.label} Package</div>
+                </div>
+                <div className="px-5 py-4 space-y-4">
+                  <div>
+                    <div className="text-3xl font-bold text-gray-900 tabular-nums">{f(data.annual)}</div>
+                    <div className="text-sm text-gray-500">per year, excl. VAT</div>
+                    {cfg.contractLength > 1 && (
+                      <div className="text-sm font-semibold text-gray-700 mt-0.5">
+                        {cfg.contractLength}y total: {f(data.totalContract)}
+                        {cfg.newCustomer && <span className="text-xs text-gray-400 ml-1">incl. onboarding</span>}
+                      </div>
+                    )}
+                    {cfg.newCustomer && cfg.contractLength === 1 && (
+                      <div className="text-sm text-gray-500 mt-0.5">+ {f(prices.onboarding)} one-time onboarding</div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="font-semibold text-gray-700 text-sm mb-1.5">Price Breakdown:</div>
+                    <Row label="Platform fee" val={f(data.platformFee)} />
+                    <Row label={`${data.pkg.reviews.toLocaleString('de-CH')} Community Reviews × ${sym} ${data.ppr}`} val={f(data.reviewsFee)} indent />
+                    {data.maintenanceFee > 0 && <Row label={`Maintenance — ${cfg.existingReviews} existing × ${sym} ${prices.maintenance}`} val={f(data.maintenanceFee)} indent />}
+                    {cfg.newCustomer && <Row label="One-time onboarding fee" val={f(data.onboardingFee)} indent />}
+                    <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1 text-sm">
+                      <span>{cfg.newCustomer ? 'First year total (incl. onboarding)' : 'Annual total'}</span>
+                      <span className="tabular-nums">{f(data.annual + (cfg.newCustomer ? data.onboardingFee : 0))}</span>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-100 pt-3">
+                    <div className="font-semibold text-gray-700 mb-2 text-sm">What's included:</div>
+                    <ul className="space-y-1.5 text-xs">
+                      {[
+                        `Up to ${data.pkg.reviews.toLocaleString('de-CH')} Community Reviews (capped at 5 per product)`,
+                        `Full ID-eligible catalog required (no products under ${currency === 'eur' ? '€50' : 'CHF 50'}, physical products only)`,
+                        `Platform fee: ${f(data.platformFee)}/year`,
+                        ...(cfg.year === 2 ? [
+                          `Maintenance: ${sym} ${prices.maintenance}/review/year for reviews kept live`,
+                          'Reviews removed from syndication if not renewed',
+                        ] : []),
+                        `${cfg.contractLength}-year contract`,
+                      ].map((t, i) => (
+                        <li key={i} className="flex gap-1.5 text-gray-600">
+                          <span className="text-green-500 shrink-0 mt-px">✓</span><span>{t}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function CombinedSummaryPage({ currency, goldComputed, goldPkgs, communityData }) {
+      const f          = n => fmt(n, currency);
+      const goldTotal  = goldComputed.reduce((s, d) => s + d.annualCustomer, 0);
+      const grandTotal = goldTotal + communityData.annual;
+
+      return (
+        <div className="p-6 max-w-5xl">
+          <h2 className="text-lg font-bold text-gray-900 mb-6">Combined Summary</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            {goldPkgs.map((pkg, i) => (
+              <div key={i} className={`bg-white rounded-xl border-2 ${PACKAGE_COLORS[i].border} p-4 shadow-sm`}>
+                <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Gold — {pkg.name || `Package ${i + 1}`}</div>
+                <div className="text-2xl font-bold text-gray-900 tabular-nums">{f(goldComputed[i].annualCustomer)}</div>
+                <div className="text-xs text-gray-400 mt-0.5">per year</div>
+              </div>
+            ))}
+            <div className="bg-white rounded-xl border-2 border-[#6B4EFF] p-4 shadow-sm">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Community — {communityData.pkg.label}</div>
+              <div className="text-2xl font-bold text-gray-900 tabular-nums">{f(communityData.annual)}</div>
+              <div className="text-xs text-gray-400 mt-0.5">per year</div>
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-[#6B4EFF] to-[#8B6FFF] rounded-2xl p-6 text-white">
+            <div className="text-sm font-semibold text-white/70 mb-1">Combined Annual Total</div>
+            <div className="text-4xl font-bold tabular-nums">{f(grandTotal)}</div>
+            <div className="text-sm text-white/70 mt-2">Gold Reviews + Community Reviews · per year excl. VAT</div>
+            <div className="mt-4 pt-4 border-t border-white/20 grid grid-cols-2 gap-4 text-sm">
+              <div><div className="text-white/60">Gold Reviews</div><div className="font-semibold">{f(goldTotal)}</div></div>
+              <div><div className="text-white/60">Community Reviews</div><div className="font-semibold">{f(communityData.annual)}</div></div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // ── Default package state ──────────────────────────────────────────────────
     const DEFAULT_PKG = (n, dirty = true) => ({
       name:            n,
@@ -760,6 +983,9 @@
       const [pricingConfigEUR, setPricingConfigEUR] = useState(DEFAULT_PRICING_CONFIG.eur);
       const [activeTab, setActiveTab] = useState(0);
       const [configOpen, setConfigOpen] = useState(false);
+      const [page, setPage] = useState('gold');
+      const [communityConfig, setCommunityConfig] = useState(DEFAULT_COMMUNITY);
+      const communityData = useMemo(() => calcCommunity(communityConfig, currency), [communityConfig, currency]);
 
       const setS = (k, v) => setShared(p => ({ ...p, [k]: v }));
 
@@ -808,7 +1034,20 @@
             </div>
           </header>
 
-          <div className="flex flex-col lg:flex-row min-h-[calc(100vh-65px)]">
+          <nav className="bg-white border-b border-gray-200 px-6 flex">
+            {[
+              { id: 'gold',      label: 'Gold Reviews' },
+              { id: 'community', label: 'Community Reviews' },
+              { id: 'summary',   label: 'Combined Summary' },
+            ].map(p => (
+              <button key={p.id} onClick={() => setPage(p.id)}
+                className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${page === p.id ? 'border-[#6B4EFF] text-[#6B4EFF]' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                {p.label}
+              </button>
+            ))}
+          </nav>
+
+          {page === 'gold' && <div className="flex flex-col lg:flex-row min-h-[calc(100vh-105px)]">
 
             {/* ── Left: Shared + Package Inputs ── */}
             <div className="lg:w-[440px] shrink-0 bg-gray-50 border-r border-gray-200 flex flex-col">
@@ -941,7 +1180,9 @@
                 )}
               </div>
             </div>
-          </div>
+          </div>}
+          {page === 'community' && <CommunityReviewsPage cfg={communityConfig} setCfg={setCommunityConfig} currency={currency} />}
+          {page === 'summary' && <CombinedSummaryPage currency={currency} goldComputed={computed} goldPkgs={effectivePkgs} communityData={communityData} />}
         </div>
       );
     }
