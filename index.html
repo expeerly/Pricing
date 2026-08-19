@@ -733,7 +733,7 @@
     const COMMUNITY_MIN    = { chf: 10000, eur: 10650 };
     const COMMUNITY_MARGIN = { starter: 3, growth: 2.4, scale: 2 };
 
-    const DEFAULT_COMMUNITY = { packageId: 'starter', year: 1, year1ReviewsDelivered: 0, existingReviews: 0, newCustomer: false, contractLength: 1, customerName: '' };
+    const DEFAULT_COMMUNITY = { packageId: 'starter', year: 1, year1ReviewsDelivered: 0, existingReviews: 0, newCustomer: false, contractLength: 1, customerName: '', loadbee: false, loadbeeRegion: 'ch' };
 
     function calcCommunity(cfg, currency) {
       const prices      = COMMUNITY_STATIC[currency];
@@ -743,14 +743,16 @@
       const reviewsFee     = pkg.reviews * ppr;
       const maintenanceFee = cfg.year === 2 ? (cfg.existingReviews || 0) * prices.maintenance : 0;
       const onboardingFee  = cfg.newCustomer ? prices.onboarding : 0;
-      const annual         = platformFee + reviewsFee + maintenanceFee;
+      const subtotalBeforeLoadbee = platformFee + reviewsFee + maintenanceFee;
+      const loadbeeFee  = cfg.loadbee ? getLoadbeeFee(subtotalBeforeLoadbee, cfg.loadbeeRegion === 'ch', STATIC_PRICES[currency]) : 0;
+      const annual         = subtotalBeforeLoadbee + loadbeeFee;
       const totalContract  = annual * cfg.contractLength + onboardingFee;
       // Carry-forward: undelivered Y1 reviews become free extra capacity in Y2.
       // Only the immediately preceding year carries — no multi-year accumulation.
       // Do NOT apply carry-forward to a churned/lapsed account.
       const carriedForward      = cfg.year === 2 ? Math.max(0, pkg.reviews - (cfg.year1ReviewsDelivered || 0)) : 0;
       const effectiveCapacity   = pkg.reviews + carriedForward;
-      return { pkg, ppr, platformFee, reviewsFee, maintenanceFee, onboardingFee, annual, totalContract,
+      return { pkg, ppr, platformFee, reviewsFee, maintenanceFee, onboardingFee, loadbeeFee, annual, totalContract,
                carriedForward, effectiveCapacity,
                margin: COMMUNITY_MARGIN[pkg.id], costBasisTotal: pkg.reviews * prices.costBasis,
                belowMin: annual < COMMUNITY_MIN[currency] };
@@ -770,15 +772,18 @@
         items.push({ t: `+ up to ${data.carriedForward} carried over from Year 1 (no additional charge)`, accent: true });
         items.push({ t: `= up to ${data.effectiveCapacity.toLocaleString('de-CH')} total this year`, accent: true });
       } else {
-        items.push({ t: `Up to ${pkgDef.reviews.toLocaleString('de-CH')} Community Reviews (capped at 5 per product)` });
+        items.push({ t: `Up to ${pkgDef.reviews.toLocaleString('de-CH')} Community Reviews/year` });
       }
-      items.push({ t: `Full ID-eligible catalog required (no products under ${minProd}, physical products only)` });
+      items.push({ t: 'Full ID-eligible catalog required' });
+      items.push({ t: 'Capped at 5 reviews/product' });
+      items.push({ t: 'Moderation by Expeerly' });
+      items.push({ t: 'Full usage rights + syndication, all channels' });
+      const existingCount = cfg.year === 2 ? (cfg.existingReviews || 0) : 0;
+      items.push({ t: `${existingCount} existing reviews syndicated this year — maintenance applies from Year 2` });
+      if (cfg.year === 1) items.push({ t: 'Undelivered reviews roll over to Year 2, once' });
       items.push({ t: `Platform fee: ${f(data.platformFee)}/year` });
-      if (cfg.year === 2) {
-        items.push({ t: `Maintenance: ${sym} ${prices.maintenance}/review/year for reviews kept live` });
-        items.push({ t: 'Reviews removed from syndication if not renewed' });
-      }
-      items.push({ t: `${cfg.contractLength}-year contract` });
+      items.push({ t: 'Annual upfront payment' });
+      items.push({ t: `${cfg.contractLength}-year contract — reviews removed if not renewed` });
 
       return (
         <div className={`rounded-2xl border-2 ${color.border} bg-white shadow-sm flex flex-col`}>
@@ -810,6 +815,7 @@
               <Row label="Platform fee" val={f(data.platformFee)} />
               <Row label={`${pkgDef.reviews.toLocaleString('de-CH')} Reviews × ${sym} ${data.ppr}`} val={f(data.reviewsFee)} indent />
               {data.maintenanceFee > 0 && <Row label={`Maintenance — ${cfg.existingReviews} existing × ${sym} ${prices.maintenance}`} val={f(data.maintenanceFee)} indent />}
+              {data.loadbeeFee > 0 && <Row label="Loadbee/Flixmedia distribution" val={f(data.loadbeeFee)} indent />}
               {cfg.newCustomer && <Row label="One-time onboarding fee" val={f(data.onboardingFee)} indent />}
               <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1 text-sm">
                 <span>{cfg.newCustomer ? 'First year total (incl. onboarding)' : 'Annual total'}</span>
@@ -888,6 +894,26 @@
                 <Toggle value={cfg.contractLength} onChange={v => set('contractLength', v)} options={[
                   { value: 1, label: '1 Year' }, { value: 2, label: '2 Years' }, { value: 3, label: '3 Years' },
                 ]} />
+              </Section>
+
+              <Section label="Loadbee / Flixmedia">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input type="checkbox" checked={cfg.loadbee} onChange={e => set('loadbee', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
+                  <span className="text-sm text-gray-700">Include Loadbee/Flixmedia</span>
+                </label>
+                {cfg.loadbee && (
+                  <div>
+                    <Toggle value={cfg.loadbeeRegion} onChange={v => set('loadbeeRegion', v)} options={[
+                      { value: 'ch',    label: 'Switzerland only' },
+                      { value: 'other', label: 'Other markets' },
+                    ]} />
+                    <p className="text-xs font-medium text-[#6B4EFF] mt-1.5">
+                      {cfg.loadbeeRegion === 'ch'
+                        ? `→ ${fmt(STATIC_PRICES[currency].loadbee.ch, currency)}/year`
+                        : `→ ${fmt(STATIC_PRICES[currency].loadbee.otherSmall, currency)} or ${fmt(STATIC_PRICES[currency].loadbee.otherLarge, currency)}/year (based on contract value)`}
+                    </p>
+                  </div>
+                )}
               </Section>
 
               <Section internal>
