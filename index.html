@@ -733,7 +733,7 @@
     const COMMUNITY_MIN    = { chf: 10000, eur: 10650 };
     const COMMUNITY_MARGIN = { starter: 3, growth: 2.4, scale: 2 };
 
-    const DEFAULT_COMMUNITY = { packageId: 'starter', year: 1, year1ReviewsDelivered: 0, existingReviews: 0, newCustomer: false, contractLength: 1 };
+    const DEFAULT_COMMUNITY = { packageId: 'starter', year: 1, year1ReviewsDelivered: 0, existingReviews: 0, newCustomer: false, contractLength: 1, customerName: '' };
 
     function calcCommunity(cfg, currency) {
       const prices      = COMMUNITY_STATIC[currency];
@@ -756,12 +756,89 @@
                belowMin: annual < COMMUNITY_MIN[currency] };
     }
 
+    function CommunityPackageCard({ pkgDef, cfg, currency }) {
+      const prices = COMMUNITY_STATIC[currency];
+      const data   = useMemo(() => calcCommunity({ ...cfg, packageId: pkgDef.id }, currency), [cfg, currency]);
+      const f      = n => fmt(n, currency);
+      const sym    = currency === 'eur' ? '€' : 'CHF';
+      const color  = pkgDef.id === 'starter' ? PACKAGE_COLORS[0] : pkgDef.id === 'growth' ? PACKAGE_COLORS[1] : PACKAGE_COLORS[2];
+      const minProd = currency === 'eur' ? '€50' : 'CHF 50';
+
+      const items = [];
+      if (cfg.year === 2 && data.carriedForward > 0) {
+        items.push({ t: `Up to ${pkgDef.reviews.toLocaleString('de-CH')} Community Reviews — Year 2 package (capped at 5 per product)` });
+        items.push({ t: `+ up to ${data.carriedForward} carried over from Year 1 (no additional charge)`, accent: true });
+        items.push({ t: `= up to ${data.effectiveCapacity.toLocaleString('de-CH')} total this year`, accent: true });
+      } else {
+        items.push({ t: `Up to ${pkgDef.reviews.toLocaleString('de-CH')} Community Reviews (capped at 5 per product)` });
+      }
+      items.push({ t: `Full ID-eligible catalog required (no products under ${minProd}, physical products only)` });
+      items.push({ t: `Platform fee: ${f(data.platformFee)}/year` });
+      if (cfg.year === 2) {
+        items.push({ t: `Maintenance: ${sym} ${prices.maintenance}/review/year for reviews kept live` });
+        items.push({ t: 'Reviews removed from syndication if not renewed' });
+      }
+      items.push({ t: `${cfg.contractLength}-year contract` });
+
+      return (
+        <div className={`rounded-2xl border-2 ${color.border} bg-white shadow-sm flex flex-col`}>
+          <div className={`${color.header} rounded-t-2xl px-5 py-4`}>
+            <div className="text-xs font-bold uppercase tracking-widest text-white/70 mb-1">Community Reviews</div>
+            <div className="text-xl font-bold text-white">{pkgDef.label} Package</div>
+          </div>
+          <div className="px-5 py-4 flex-1 flex flex-col gap-4">
+            <div>
+              <div className="text-3xl font-bold text-gray-900 tabular-nums">{f(data.annual)}</div>
+              <div className="text-sm text-gray-500">per year, excl. VAT</div>
+              {cfg.contractLength > 1 && (
+                <div className="text-sm font-semibold text-gray-700 mt-0.5">
+                  {cfg.contractLength}y total: {f(data.totalContract)}
+                  {cfg.newCustomer && <span className="text-xs text-gray-400 ml-1">incl. onboarding</span>}
+                </div>
+              )}
+              {cfg.newCustomer && cfg.contractLength === 1 && (
+                <div className="text-sm text-gray-500 mt-0.5">+ {f(prices.onboarding)} one-time onboarding</div>
+              )}
+              {data.belowMin && (
+                <div className="mt-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 text-xs text-amber-700 font-medium">
+                  ⚠ Below minimum ({f(COMMUNITY_MIN[currency])})
+                </div>
+              )}
+            </div>
+            <div className="space-y-1">
+              <div className="font-semibold text-gray-700 text-sm mb-1.5">Price Breakdown:</div>
+              <Row label="Platform fee" val={f(data.platformFee)} />
+              <Row label={`${pkgDef.reviews.toLocaleString('de-CH')} Reviews × ${sym} ${data.ppr}`} val={f(data.reviewsFee)} indent />
+              {data.maintenanceFee > 0 && <Row label={`Maintenance — ${cfg.existingReviews} existing × ${sym} ${prices.maintenance}`} val={f(data.maintenanceFee)} indent />}
+              {cfg.newCustomer && <Row label="One-time onboarding fee" val={f(data.onboardingFee)} indent />}
+              <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1 text-sm">
+                <span>{cfg.newCustomer ? 'First year total (incl. onboarding)' : 'Annual total'}</span>
+                <span className="tabular-nums">{f(data.annual + (cfg.newCustomer ? data.onboardingFee : 0))}</span>
+              </div>
+            </div>
+            <div className="border-t border-gray-100 pt-3 flex-1">
+              <div className="font-semibold text-gray-700 mb-2 text-sm">What's included:</div>
+              <ul className="space-y-1.5 text-xs">
+                {items.map((item, i) => (
+                  <li key={i} className={`flex gap-1.5 ${item.accent ? 'text-[#6B4EFF] font-medium' : 'text-gray-600'}`}>
+                    <span className={`shrink-0 mt-px ${item.accent ? 'text-[#6B4EFF]' : 'text-green-500'}`}>{item.accent ? '·' : '✓'}</span>
+                    <span>{item.t}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     function CommunityReviewsPage({ cfg, setCfg, currency }) {
       const set    = (k, v) => setCfg(p => ({ ...p, [k]: v }));
       const prices = COMMUNITY_STATIC[currency];
-      const data   = useMemo(() => calcCommunity(cfg, currency), [cfg, currency]);
       const f      = n => fmt(n, currency);
       const sym    = currency === 'eur' ? '€' : 'CHF';
+      // For carry-forward hint in the left panel, compute for current packageId
+      const hintData = useMemo(() => calcCommunity(cfg, currency), [cfg, currency]);
 
       return (
         <div className="flex flex-col lg:flex-row min-h-[calc(100vh-105px)]">
@@ -770,33 +847,15 @@
             <div className="p-5 space-y-0">
 
               <Section label="Customer">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={cfg.newCustomer} onChange={e => set('newCustomer', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
-                  <span className="text-sm text-gray-700">New customer <span className="text-gray-400">(+{f(prices.onboarding)} onboarding)</span></span>
-                </label>
-              </Section>
-
-              <Section label="Package">
-                <div className="flex flex-col gap-2">
-                  {COMMUNITY_PKGS.map(pkg => {
-                    const ppr    = prices.packages[pkg.id];
-                    const active = cfg.packageId === pkg.id;
-                    return (
-                      <button key={pkg.id} onClick={() => set('packageId', pkg.id)}
-                        className={`w-full text-left px-3 py-3 rounded-xl border-2 transition-colors ${active ? 'border-[#6B4EFF] bg-purple-50' : 'border-gray-200 bg-white hover:border-[#6B4EFF]/40'}`}>
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className={`text-sm font-bold ${active ? 'text-[#6B4EFF]' : 'text-gray-800'}`}>{pkg.label}</div>
-                            <div className="text-xs text-gray-500 mt-0.5">Up to {pkg.reviews.toLocaleString('de-CH')} reviews</div>
-                          </div>
-                          <div className={`text-right shrink-0 ml-3 ${active ? 'text-[#6B4EFF]' : 'text-gray-600'}`}>
-                            <div className="text-sm font-bold">{sym} {ppr}/review</div>
-                            <div className="text-xs text-gray-400">{f(pkg.reviews * ppr)}/yr</div>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="space-y-3">
+                  <input type="text" placeholder="Company name" value={cfg.customerName || ''}
+                    onChange={e => set('customerName', e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#6B4EFF]"
+                  />
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={cfg.newCustomer} onChange={e => set('newCustomer', e.target.checked)} className="w-4 h-4 accent-[#6B4EFF]" />
+                    <span className="text-sm text-gray-700">New customer <span className="text-gray-400">(+{f(prices.onboarding)} onboarding)</span></span>
+                  </label>
                 </div>
               </Section>
 
@@ -810,8 +869,8 @@
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">Reviews delivered in Year 1</label>
                       <NumInput value={cfg.year1ReviewsDelivered} onChange={v => set('year1ReviewsDelivered', v)} className="w-full" />
-                      {data.carriedForward > 0 && (
-                        <p className="text-xs text-[#6B4EFF] mt-1">→ {data.carriedForward} review{data.carriedForward > 1 ? 's' : ''} carry forward (no charge)</p>
+                      {hintData.carriedForward > 0 && (
+                        <p className="text-xs text-[#6B4EFF] mt-1">→ {hintData.carriedForward} review{hintData.carriedForward > 1 ? 's' : ''} carry forward (no charge)</p>
                       )}
                     </div>
                     <div>
@@ -834,13 +893,10 @@
               <Section internal>
                 <div className="text-xs font-semibold text-amber-800 mb-2">Cost Basis & Margin</div>
                 <div className="space-y-1 text-xs">
-                  {[
-                    ['Cost basis/review', `${sym} ${prices.costBasis}`],
-                    [`Total cost (${data.pkg.reviews} reviews)`, f(data.costBasisTotal)],
-                    [`Margin — ${data.pkg.label}`, `${data.margin}×`],
-                  ].map(([label, val]) => (
-                    <div key={label} className="flex justify-between text-amber-700">
-                      <span>{label}</span><span className="font-semibold">{val}</span>
+                  {COMMUNITY_PKGS.map(pkg => (
+                    <div key={pkg.id} className="flex justify-between text-amber-700">
+                      <span>{pkg.label} ({pkg.reviews} reviews)</span>
+                      <span className="font-semibold">{COMMUNITY_MARGIN[pkg.id]}× margin · {sym} {prices.costBasis}/review basis</span>
                     </div>
                   ))}
                 </div>
@@ -851,117 +907,15 @@
           {/* Right panel */}
           <div className="flex-1 p-5 overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-lg font-bold text-gray-900">Community Reviews Package</h2>
+              <h2 className="text-lg font-bold text-gray-900">
+                Community Reviews{cfg.customerName ? ` — ${cfg.customerName}` : ''}
+              </h2>
               <span className="text-xs text-gray-400 bg-white border border-gray-200 px-3 py-1.5 rounded-full">Updates in real time</span>
             </div>
-
-            {data.belowMin && (
-              <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 text-sm text-amber-800 font-medium">
-                ⚠ Below minimum contract value ({f(COMMUNITY_MIN[currency])}) — review pricing before presenting.
-              </div>
-            )}
-
-            <div className="max-w-md">
-              <div className="rounded-2xl border-2 border-[#6B4EFF] bg-white shadow-sm">
-                <div className="bg-gradient-to-br from-[#6B4EFF] to-[#8B6FFF] rounded-t-2xl px-5 py-4">
-                  <div className="text-xs font-bold uppercase tracking-widest text-white/70 mb-1">Community Reviews</div>
-                  <div className="text-xl font-bold text-white">{data.pkg.label} Package</div>
-                </div>
-                <div className="px-5 py-4 space-y-4">
-                  <div>
-                    <div className="text-3xl font-bold text-gray-900 tabular-nums">{f(data.annual)}</div>
-                    <div className="text-sm text-gray-500">per year, excl. VAT</div>
-                    {cfg.contractLength > 1 && (
-                      <div className="text-sm font-semibold text-gray-700 mt-0.5">
-                        {cfg.contractLength}y total: {f(data.totalContract)}
-                        {cfg.newCustomer && <span className="text-xs text-gray-400 ml-1">incl. onboarding</span>}
-                      </div>
-                    )}
-                    {cfg.newCustomer && cfg.contractLength === 1 && (
-                      <div className="text-sm text-gray-500 mt-0.5">+ {f(prices.onboarding)} one-time onboarding</div>
-                    )}
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="font-semibold text-gray-700 text-sm mb-1.5">Price Breakdown:</div>
-                    <Row label="Platform fee" val={f(data.platformFee)} />
-                    <Row label={`${data.pkg.reviews.toLocaleString('de-CH')} Community Reviews × ${sym} ${data.ppr}`} val={f(data.reviewsFee)} indent />
-                    {data.maintenanceFee > 0 && <Row label={`Maintenance — ${cfg.existingReviews} existing × ${sym} ${prices.maintenance}`} val={f(data.maintenanceFee)} indent />}
-                    {cfg.newCustomer && <Row label="One-time onboarding fee" val={f(data.onboardingFee)} indent />}
-                    <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1 text-sm">
-                      <span>{cfg.newCustomer ? 'First year total (incl. onboarding)' : 'Annual total'}</span>
-                      <span className="tabular-nums">{f(data.annual + (cfg.newCustomer ? data.onboardingFee : 0))}</span>
-                    </div>
-                  </div>
-
-                  <div className="border-t border-gray-100 pt-3">
-                    <div className="font-semibold text-gray-700 mb-2 text-sm">What's included:</div>
-                    <ul className="space-y-1.5 text-xs">
-                      {(() => {
-                        const items = [];
-                        const minProd = currency === 'eur' ? '€50' : 'CHF 50';
-                        if (cfg.year === 2 && data.carriedForward > 0) {
-                          items.push({ t: `Up to ${data.pkg.reviews.toLocaleString('de-CH')} Community Reviews — Year 2 package (capped at 5 per product)` });
-                          items.push({ t: `+ up to ${data.carriedForward} carried over from Year 1 (no additional charge)`, accent: true });
-                          items.push({ t: `= up to ${data.effectiveCapacity.toLocaleString('de-CH')} total this year`, accent: true });
-                        } else {
-                          items.push({ t: `Up to ${data.pkg.reviews.toLocaleString('de-CH')} Community Reviews (capped at 5 per product)` });
-                        }
-                        items.push({ t: `Full ID-eligible catalog required (no products under ${minProd}, physical products only)` });
-                        items.push({ t: `Platform fee: ${f(data.platformFee)}/year` });
-                        if (cfg.year === 2) {
-                          items.push({ t: `Maintenance: ${sym} ${prices.maintenance}/review/year for reviews kept live` });
-                          items.push({ t: 'Reviews removed from syndication if not renewed' });
-                        }
-                        items.push({ t: `${cfg.contractLength}-year contract` });
-                        return items.map((item, i) => (
-                          <li key={i} className={`flex gap-1.5 ${item.accent ? 'text-[#6B4EFF] font-medium' : 'text-gray-600'}`}>
-                            <span className={`shrink-0 mt-px ${item.accent ? 'text-[#6B4EFF]' : 'text-green-500'}`}>{item.accent ? '·' : '✓'}</span>
-                            <span>{item.t}</span>
-                          </li>
-                        ));
-                      })()}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function CombinedSummaryPage({ currency, goldComputed, goldPkgs, communityData }) {
-      const f          = n => fmt(n, currency);
-      const goldTotal  = goldComputed.reduce((s, d) => s + d.annualCustomer, 0);
-      const grandTotal = goldTotal + communityData.annual;
-
-      return (
-        <div className="p-6 max-w-5xl">
-          <h2 className="text-lg font-bold text-gray-900 mb-6">Combined Summary</h2>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            {goldPkgs.map((pkg, i) => (
-              <div key={i} className={`bg-white rounded-xl border-2 ${PACKAGE_COLORS[i].border} p-4 shadow-sm`}>
-                <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Gold — {pkg.name || `Package ${i + 1}`}</div>
-                <div className="text-2xl font-bold text-gray-900 tabular-nums">{f(goldComputed[i].annualCustomer)}</div>
-                <div className="text-xs text-gray-400 mt-0.5">per year</div>
-              </div>
-            ))}
-            <div className="bg-white rounded-xl border-2 border-[#6B4EFF] p-4 shadow-sm">
-              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Community — {communityData.pkg.label}</div>
-              <div className="text-2xl font-bold text-gray-900 tabular-nums">{f(communityData.annual)}</div>
-              <div className="text-xs text-gray-400 mt-0.5">per year</div>
-            </div>
-          </div>
-
-          <div className="bg-gradient-to-br from-[#6B4EFF] to-[#8B6FFF] rounded-2xl p-6 text-white">
-            <div className="text-sm font-semibold text-white/70 mb-1">Combined Annual Total</div>
-            <div className="text-4xl font-bold tabular-nums">{f(grandTotal)}</div>
-            <div className="text-sm text-white/70 mt-2">Gold Reviews + Community Reviews · per year excl. VAT</div>
-            <div className="mt-4 pt-4 border-t border-white/20 grid grid-cols-2 gap-4 text-sm">
-              <div><div className="text-white/60">Gold Reviews</div><div className="font-semibold">{f(goldTotal)}</div></div>
-              <div><div className="text-white/60">Community Reviews</div><div className="font-semibold">{f(communityData.annual)}</div></div>
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+              {COMMUNITY_PKGS.map(pkgDef => (
+                <CommunityPackageCard key={pkgDef.id} pkgDef={pkgDef} cfg={cfg} currency={currency} />
+              ))}
             </div>
           </div>
         </div>
@@ -1010,7 +964,6 @@
       const [configOpen, setConfigOpen] = useState(false);
       const [page, setPage] = useState('gold');
       const [communityConfig, setCommunityConfig] = useState(DEFAULT_COMMUNITY);
-      const communityData = useMemo(() => calcCommunity(communityConfig, currency), [communityConfig, currency]);
 
       const setS = (k, v) => setShared(p => ({ ...p, [k]: v }));
 
@@ -1063,7 +1016,6 @@
             {[
               { id: 'gold',      label: 'Gold Reviews' },
               { id: 'community', label: 'Community Reviews' },
-              { id: 'summary',   label: 'Combined Summary' },
             ].map(p => (
               <button key={p.id} onClick={() => setPage(p.id)}
                 className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${page === p.id ? 'border-[#6B4EFF] text-[#6B4EFF]' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
@@ -1207,7 +1159,6 @@
             </div>
           </div>}
           {page === 'community' && <CommunityReviewsPage cfg={communityConfig} setCfg={setCommunityConfig} currency={currency} />}
-          {page === 'summary' && <CombinedSummaryPage currency={currency} goldComputed={computed} goldPkgs={effectivePkgs} communityData={communityData} />}
         </div>
       );
     }
