@@ -199,14 +199,15 @@
       const newRevFee     = calcTieredFee(aboveMix, aboveCount, pricingConfig);
       const tierBreakdown = calcTierBreakdown(aboveMix, aboveCount, pricingConfig);
 
-      // Loan surcharge applies only to above-base loan reviews (base absorption covers within-base)
+      // Loan and recruiting surcharges are per-reviewer, not per format.
+      // Divide by formatMult so "both formats" doesn't double-charge these.
       const loanSurcharge =
-        (aboveMix.standardLoan || 0) * pricingConfig.loanSurcharge.standardLoan +
-        (aboveMix.mdaLoan      || 0) * pricingConfig.loanSurcharge.mdaLoan;
+        (aboveMix.standardLoan || 0) / formatMult * pricingConfig.loanSurcharge.standardLoan +
+        (aboveMix.mdaLoan      || 0) / formatMult * pricingConfig.loanSurcharge.mdaLoan;
 
       // Recruiting surcharge applies only to reviews above base
       const recruitingSurchargeRate = RECRUITING_SURCHARGE[pkgInputs.recruitingLevel] || 0;
-      const recruitingFee           = recruitingSurchargeRate * aboveCount;
+      const recruitingFee           = recruitingSurchargeRate * (aboveCount / formatMult);
       const onboardingFee           = shared.newCustomer ? prices.onboardingFee : 0;
 
       const voiceoverFee = (pkgInputs.voiceoverLanguages || 0) * prices.voiceover;
