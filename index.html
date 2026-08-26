@@ -558,11 +558,11 @@
 
     // ── Per-package Input Panel ────────────────────────────────────────────────
     const REVIEW_TYPE_ROWS = [
-      { key: 'standardGifted', label: 'Standard gifted reviews' },
-      { key: 'mdaGifted',      label: 'MDA gifted reviews' },
-      { key: 'standardLoan',   label: 'Standard loan products' },
-      { key: 'mdaLoan',        label: 'MDA loan products' },
-      { key: 'cheapProduct',   label: 'Cheap product (<CHF/€100)' },
+      { key: 'standardGifted', label: 'Standard gifted reviews',  tip: 'Product valued above CHF/€100, gifted to the reviewer permanently. The most common review type.' },
+      { key: 'mdaGifted',      label: 'MDA gifted reviews',       tip: 'Major domestic appliance (fridge, dishwasher, oven, etc.) valued above CHF/€100, gifted to the reviewer permanently.' },
+      { key: 'standardLoan',   label: 'Standard loan products',   tip: 'Same as standard gifted — but the reviewer returns the product after the review. Expeerly manages pickup logistics. Loan surcharge applies.' },
+      { key: 'mdaLoan',        label: 'MDA loan products',        tip: 'Same as MDA gifted — but the reviewer returns the appliance after the review. Loan surcharge applies.' },
+      { key: 'cheapProduct',   label: 'Cheap product (<CHF/€100)', tip: 'Standard gifted product valued under CHF/€100. Because the product alone isn\'t sufficient incentive, reviewers receive additional compensation — reflected in the lower per-review price.' },
     ];
 
     function InfoTip({ text }) {
@@ -642,7 +642,7 @@
               {REVIEW_TYPE_ROWS.map(row => (
                 <div key={row.key} className="flex items-start gap-3">
                   <NumInput value={pkg.reviewMix[row.key]} onChange={v => setMix(row.key, v)} className="w-20 shrink-0" />
-                  <div className="text-sm font-medium text-gray-700">{row.label}</div>
+                  <div className="text-sm font-medium text-gray-700">{row.label}<InfoTip text={row.tip} /></div>
                 </div>
               ))}
             </div>
